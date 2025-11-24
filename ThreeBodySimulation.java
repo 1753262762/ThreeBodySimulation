@@ -26,20 +26,31 @@ public class ThreeBodySimulation extends JPanel {
     private static final int WINDOW_WIDTH = 1920; // 窗口默认宽度
     private static final int WINDOW_HEIGHT = 1080; // 窗口默认高度
 
-    // 全屏相关变量
-    private boolean isFullScreen = false; // 全屏状态标志
-    private GraphicsDevice device; // 图形设备,用于全屏控制
-    private Dimension originalSize; // 退出全屏时恢复的窗口大小
-    private Point originalLocation; // 退出全屏时恢复的窗口位置
+    // ============================ 全屏相关变量 ============================
+    private boolean isFullScreen = false;
+    // 全屏状态标志
+    private GraphicsDevice device;
+    // 图形设备,用于全屏控制
+    private Dimension originalSize;
+    // 退出全屏时恢复的窗口大小
+    private Point originalLocation;
+    // 退出全屏时恢复的窗口位置
 
     // ============================ 三体模拟物理参数 ============================
-    private static final double G = 6.67430e-11; // 万有引力常数
-    private double dt = 43200; // 时间步长: 12小时(43200秒)
-    private double scale = 4e9 * 0.2; // 坐标缩放比例,将天文单位转换为像素
-    private List<Body> bodies; // 天体对象列表
-    private Timer timer; // 模拟更新定时器
-    private List<List<Point>> trails; // 每个天体的运动轨迹点列表
-    private int stepCount = 0; // 模拟步数计数器
+    private static final double G = 6.67430e-11;
+    // 万有引力常数
+    private double dt = 43200;
+    // 时间步长: 12小时(43200秒)
+    private double scale = 4e9 * 0.2;
+    // 坐标缩放比例,将天文单位转换为像素
+    private List<Body> bodies;
+    // 天体对象列表
+    private Timer timer;
+    // 模拟更新定时器
+    private List<List<Point>> trails;
+    // 每个天体的运动轨迹点列表
+    private int stepCount = 0;
+    // 模拟步数计数器
 
     // ============================ 主题和视觉效果参数 ============================
     /**
@@ -90,7 +101,6 @@ public class ThreeBodySimulation extends JPanel {
 
         // 获取默认图形设备用于全屏控制
         device = GraphicsEnvironment.getLocalGraphicsEnvironment().getDefaultScreenDevice();
-
         // 设置键盘快捷键和鼠标控制
         setupKeyBindings();
         setupMouseControls();
@@ -514,7 +524,7 @@ public class ThreeBodySimulation extends JPanel {
                     (int) ((b.position.y / scale) * zoom + WINDOW_HEIGHT / 2 + offsetY));
             trails.get(i).add(pt);
             // 限制轨迹长度,避免内存过度使用
-            if (trails.get(i).size() > 2000)
+            if (trails.get(i).size() > 1000)
                 trails.get(i).remove(0);
         }
     }

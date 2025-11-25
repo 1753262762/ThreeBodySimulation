@@ -397,11 +397,22 @@ public class ThreeBodySimulation extends JPanel {
      * 三个质量相近的天体,形成典型的混沌三体系统
      */
     private void planA() {
-        bodies.add(new Body(10.989e30, new Vector3D(2.1e8, 1.2e6, 0), new Vector3D(1919, 1145, 0), Color.YELLOW));
+        dt = 43200;
         bodies.add(
-                new Body(10.289e30, new Vector3D(2.796e11, 2.796e11, 0), new Vector3D(20000, -20000, 0), Color.BLUE));
+                new Body(10.989e30,
+                        new Vector3D(2.1e8, 1.2e6, 0),
+                        new Vector3D(1919, 1145, 0),
+                        Color.YELLOW));
         bodies.add(
-                new Body(10.289e30, new Vector3D(-2.796e11, -2.796e11, 0), new Vector3D(-20000, 20000, 0), Color.RED));
+                new Body(10.289e30,
+                        new Vector3D(2.796e11, 2.796e11, 0),
+                        new Vector3D(20000, -20000, 0),
+                        Color.BLUE));
+        bodies.add(
+                new Body(10.289e30,
+                        new Vector3D(-2.796e11, -2.796e11, 0),
+                        new Vector3D(-20000, 20000, 0),
+                        Color.RED));
     }
 
     /**
@@ -409,9 +420,32 @@ public class ThreeBodySimulation extends JPanel {
      * 三个天体在水平轴上对称分布
      */
     private void planB() {
-        bodies.add(new Body(10.989e30, new Vector3D(0, 0, 0), new Vector3D(0, 0, 0), Color.YELLOW));
-        bodies.add(new Body(10.289e30, new Vector3D(2.796e11, 0, 0), new Vector3D(0, 20000, 0), Color.BLUE));
-        bodies.add(new Body(10.289e30, new Vector3D(-2.796e11, 0, 0), new Vector3D(0, -20000, 0), Color.RED));
+        dt = 43200 / 4;
+        bodies.add(
+                new Body(10.989e30,
+                        new Vector3D(0, 0, 0),
+                        new Vector3D(0, 0, 0),
+                        Color.YELLOW));
+        bodies.add(
+                new Body(10.289e30,
+                        new Vector3D(2.796e11, 0, 0),
+                        new Vector3D(0, 20000, 0),
+                        Color.BLUE));
+        bodies.add(
+                new Body(10.289e30,
+                        new Vector3D(-2.796e11, 0, 0),
+                        new Vector3D(0, -20000, 0),
+                        Color.RED));
+        bodies.add(
+                new Body(5.289e30,
+                        new Vector3D(-4.796e11, 8, 9),
+                        new Vector3D(0, 0, 20000),
+                        Color.RED));
+        // bodies.add(
+        // new Body(5.289e30,
+        // new Vector3D(4.796e11, -10, -12),
+        // new Vector3D(10000, 10000, 10000),
+        // Color.RED));
     }
 
     /**
@@ -419,9 +453,22 @@ public class ThreeBodySimulation extends JPanel {
      * 三个天体在垂直轴上对称分布
      */
     private void planC() {
-        bodies.add(new Body(10.989e30, new Vector3D(0, 0, 0), new Vector3D(0, 0, 0), Color.YELLOW));
-        bodies.add(new Body(10.289e30, new Vector3D(0, 2.796e11, 0), new Vector3D(-20000, 0, 0), Color.BLUE));
-        bodies.add(new Body(10.289e30, new Vector3D(0, -2.796e11, 0), new Vector3D(20000, 0, 0), Color.RED));
+        dt = 43200;
+        bodies.add(new Body(
+                10.989e30, // 质量 (kg)
+                new Vector3D(0, 0, 0), // 位置 (m)
+                new Vector3D(0, 0, 0), // 速度 (m/s)
+                Color.YELLOW));
+        bodies.add(new Body(
+                10.289e30, // 质量 (kg)
+                new Vector3D(2.796e11, 2.796e11, 0), // 位置 (m) - 1 AU
+                new Vector3D(20000, -20000, 0), // 速度 (m/s)
+                Color.BLUE));
+        bodies.add(new Body(
+                13.289e30, // 质量 (kg)
+                new Vector3D(-2.796e11, -2.796e11, 0), // 位置 (m) - 1 AU
+                new Vector3D(-20000, 20000, 0), // 速度 (m/s)
+                Color.red));
     }
 
     /**
@@ -429,9 +476,24 @@ public class ThreeBodySimulation extends JPanel {
      * 天体间距离较小,运动更为剧烈
      */
     private void planD() {
-        bodies.add(new Body(10.989e30, new Vector3D(0, 0, 0), new Vector3D(0, 0, 0), Color.YELLOW));
-        bodies.add(new Body(10.289e30, new Vector3D(1.5e11, 1.5e11, 0), new Vector3D(10000, -15000, 0), Color.BLUE));
-        bodies.add(new Body(10.289e30, new Vector3D(-1.5e11, -1.5e11, 0), new Vector3D(-10000, 15000, 0), Color.RED));
+        dt = 43200;
+        bodies.add(new Body(
+                10.989e30, // 质量 (kg)
+                new Vector3D(0, 0, 0), // 位置 (m)
+                new Vector3D(0, 0, 0), // 速度 (m/s)
+                Color.YELLOW));
+
+        bodies.add(new Body(
+                10.289e30, // 质量 (kg)
+                new Vector3D(2.796e11, 2.796e11, 0), // 位置 (m) - 1 AU
+                new Vector3D(20000, -20000, 0), // 速度 (m/s)
+                Color.BLUE));
+
+        bodies.add(new Body(
+                12.289e30, // 质量 (kg)
+                new Vector3D(-2.796e11, -2.796e11, 0), // 位置 (m) - 1 AU
+                new Vector3D(-20000, 20000, 0), // 速度 (m/s)
+                Color.red));
     }
 
     // ============================ 粒子效果系统 ============================

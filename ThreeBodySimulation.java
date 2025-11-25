@@ -524,7 +524,7 @@ public class ThreeBodySimulation extends JPanel {
                     (int) ((b.position.y / scale) * zoom + WINDOW_HEIGHT / 2 + offsetY));
             trails.get(i).add(pt);
             // 限制轨迹长度,避免内存过度使用
-            if (trails.get(i).size() > 1000)
+            if (trails.get(i).size() > 2000)
                 trails.get(i).remove(0);
         }
     }
@@ -586,6 +586,14 @@ public class ThreeBodySimulation extends JPanel {
         Graphics2D g2d = (Graphics2D) g;
         // 启用抗锯齿,提高图形质量
         g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g2d.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        g2d.setRenderingHint(RenderingHints.KEY_ALPHA_INTERPOLATION, RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
+        g2d.setRenderingHint(RenderingHints.KEY_COLOR_RENDERING, RenderingHints.VALUE_COLOR_RENDER_QUALITY);
+        g2d.setRenderingHint(RenderingHints.KEY_DITHERING, RenderingHints.VALUE_DITHER_ENABLE);
+        g2d.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+        g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
 
         // 根据当前主题绘制背景
         switch (currentTheme) {
@@ -613,6 +621,13 @@ public class ThreeBodySimulation extends JPanel {
 
         // 绘制天体运动轨迹
         if (showTrails) {
+            // 设置高质量线条渲染
+            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2d.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+
+            // 使用更平滑的线条笔划
+            g2d.setStroke(new BasicStroke(2.0f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+
             for (int i = 0; i < trails.size(); i++) {
                 List<Point> trail = trails.get(i);
                 for (int j = 1; j < trail.size(); j++) {

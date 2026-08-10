@@ -44,7 +44,7 @@ async function confirmReorder(): Promise<void> {
     <div class="lab-title">
       <span>任务队列</span>
       <button class="queue-reorder-toggle" type="button" @click="toggleReorder">
-        {{ reorderMode ? '完成排序' : '拖拽排序' }}
+        {{ reorderMode ? '完成排序' : '调整顺序' }}
       </button>
     </div>
 
@@ -89,11 +89,11 @@ async function confirmReorder(): Promise<void> {
           <i :style="{ width: Math.min(100, Math.round((item.progress.completionRatio ?? 0) * 100)) + '%' }"></i>
         </div>
         <div class="queue-actions">
-          <button v-if="item.status === 'QUEUED'" type="button" @click="store.submitAction('CANCEL')">取消</button>
-          <button v-if="item.status === 'RUNNING'" type="button" @click="store.submitAction('PAUSE')">暂停</button>
-          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitAction('RESUME')">继续</button>
-          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitAction('STEP')">单步</button>
-          <button v-if="isTerminalStatus(item.status)" type="button" @click="store.submitAction('RESTART')">重启</button>
+          <button v-if="item.status === 'QUEUED'" type="button" @click="store.submitActionFor(item.id, 'CANCEL')">取消</button>
+          <button v-if="item.status === 'RUNNING'" type="button" @click="store.submitActionFor(item.id, 'PAUSE')">暂停</button>
+          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitActionFor(item.id, 'RESUME')">继续</button>
+          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitActionFor(item.id, 'STEP')">单步</button>
+          <button v-if="isTerminalStatus(item.status)" type="button" @click="store.submitActionFor(item.id, 'RESTART')">重启</button>
           <button type="button" class="danger" @click="store.deleteExperiment(item.id)">删除</button>
           <RouterLink v-if="item.status === 'COMPLETED'" :to="'/reports/' + item.id">报告</RouterLink>
         </div>

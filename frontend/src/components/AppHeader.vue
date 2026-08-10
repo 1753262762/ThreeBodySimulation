@@ -13,9 +13,11 @@ const connectionLabel = computed(() => {
     case 'RECONNECTING':
       return '正在重连'
     case 'CLOSED':
-      return '连接已关闭'
+      return '实时连接已断开'
     default:
-      return '未连接'
+      if (experimentsStore.backendReachable === true) return '后端已连接'
+      if (experimentsStore.backendReachable === false) return '后端不可用'
+      return '正在连接后端'
   }
 })
 
@@ -27,6 +29,10 @@ const connectionClass = computed(() => {
     case 'RECONNECTING':
       return 'is-pending'
     default:
+      if (experimentsStore.connectionState === 'IDLE' && experimentsStore.backendReachable === true) {
+        return 'is-open'
+      }
+      if (experimentsStore.backendReachable === null) return 'is-pending'
       return 'is-down'
   }
 })

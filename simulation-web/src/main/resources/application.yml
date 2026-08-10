@@ -1,0 +1,10 @@
+spring:
+  application:
+    name: three-body-lab
+  web:
+    resources:
+      static-locations: classpath:/static/
+
+server:
+  port: 8721
+  address: 127.0.0.1

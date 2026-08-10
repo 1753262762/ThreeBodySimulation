@@ -22,6 +22,27 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = id.replaceAll('\\', '/')
+          if (normalizedId.includes('/node_modules/echarts/')) {
+            return 'charts'
+          }
+          if (normalizedId.includes('/node_modules/zrender/')) return 'zrender'
+          if (
+            normalizedId.includes('/node_modules/vue/')
+            || normalizedId.includes('/node_modules/@vue/')
+            || normalizedId.includes('/node_modules/pinia/')
+            || normalizedId.includes('/node_modules/vue-router/')
+          ) {
+            return 'vue-vendor'
+          }
+        },
+      },
+    },
+  },
   test: {
     environment: 'jsdom',
     globals: false,

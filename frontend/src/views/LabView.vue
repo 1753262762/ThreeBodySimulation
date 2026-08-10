@@ -183,9 +183,9 @@ onUnmounted(() => {
             :nearest-pair-ids="nearestPairIds"
           />
           <footer>
-            <button :disabled="!activeExperiment" @click="experimentsStore.submitAction('PAUSE')" title="暂停">Ⅱ</button>
-            <button class="pause" :disabled="!activeExperiment" @click="experimentsStore.submitAction('RESUME')" title="继续">▶</button>
-            <button :disabled="!activeExperiment" @click="experimentsStore.submitAction('STEP')" title="单步">▶│</button>
+            <button :disabled="!experimentsStore.can('PAUSE')" @click="experimentsStore.submitAction('PAUSE')" title="暂停">Ⅱ</button>
+            <button class="pause" :disabled="!experimentsStore.can('RESUME')" @click="experimentsStore.submitAction('RESUME')" title="继续">▶</button>
+            <button :disabled="!experimentsStore.can('STEP')" @click="experimentsStore.submitAction('STEP')" title="单步">▶│</button>
             <div class="lab-progress">
               <i :style="{ width: `${Math.min(100, Math.round((activeExperiment?.progress.completionRatio ?? 0) * 100))}%` }"></i>
             </div>

@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: three-body-lab
+
+server:
+  port: 8721
+  address: 127.0.0.1

@@ -47,6 +47,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
   const summaries = ref<ExperimentSummary[]>([])
   const listLoading = ref(false)
   const listError = ref<string | null>(null)
+  const backendReachable = ref<boolean | null>(null)
 
   const current = ref<Experiment | null>(null)
   const currentLoading = ref(false)
@@ -99,7 +100,9 @@ export const useExperimentsStore = defineStore('experiments', () => {
     listError.value = null
     try {
       summaries.value = await api.listExperiments()
+      backendReachable.value = true
     } catch (error) {
+      backendReachable.value = false
       listError.value = error instanceof ApiError ? error.message : '加载实验列表失败。'
     } finally {
       listLoading.value = false
@@ -258,19 +261,23 @@ export const useExperimentsStore = defineStore('experiments', () => {
     }
   }
 
-  async function submitAction(action: ExperimentAction, config?: SimulationConfig): Promise<boolean> {
-    const experiment = current.value
-    if (!experiment) return false
+  async function submitActionFor(
+    experimentId: string,
+    action: ExperimentAction,
+    config?: SimulationConfig,
+  ): Promise<boolean> {
     actionPending.value = action
     actionError.value = null
     try {
-      const updated = await api.submitAction(experiment.id, {
+      const updated = await api.submitAction(experimentId, {
         action,
         // 契约要求：只有 RESTART 可携带配置，其他动作必须为 null。
         config: action === 'RESTART' ? (config ?? null) : null,
       })
-      current.value = updated
-      if (action === 'RESTART') {
+      if (current.value?.id === experimentId) {
+        current.value = updated
+      }
+      if (action === 'RESTART' && current.value?.id === experimentId) {
         resetLiveBuffers()
       }
       await loadList()
@@ -280,7 +287,9 @@ export const useExperimentsStore = defineStore('experiments', () => {
         actionError.value = error.message
         // 状态冲突说明本地视图已过期，立即全量刷新。
         if (error.isConflict) {
-          await loadExperiment(experiment.id, { keepBuffers: true }).catch(() => undefined)
+          if (current.value?.id === experimentId) {
+            await loadExperiment(experimentId, { keepBuffers: true }).catch(() => undefined)
+          }
           await loadList()
         }
       } else {
@@ -290,6 +299,12 @@ export const useExperimentsStore = defineStore('experiments', () => {
     } finally {
       actionPending.value = null
     }
+  }
+
+  async function submitAction(action: ExperimentAction, config?: SimulationConfig): Promise<boolean> {
+    const experiment = current.value
+    if (!experiment) return false
+    return submitActionFor(experiment.id, action, config)
   }
 
   async function updateQueuedConfig(id: string, config: SimulationConfig, name?: string): Promise<boolean> {
@@ -343,6 +358,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     summaries,
     listLoading,
     listError,
+    backendReachable,
     current,
     currentLoading,
     currentError,
@@ -368,6 +384,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     dismissEncounter,
     createExperiment,
     submitAction,
+    submitActionFor,
     updateQueuedConfig,
     reorderQueue,
     deleteExperiment,

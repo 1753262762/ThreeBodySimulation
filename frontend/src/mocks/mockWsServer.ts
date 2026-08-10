@@ -53,12 +53,13 @@ export function createMockWsHandler() {
       }),
     )
     if (experiment.state) {
+      record.wsSequence += 1
       client.send(
         JSON.stringify({
           schemaVersion: '1.0',
           type: 'SNAPSHOT',
           experimentId: experiment.id,
-          sequence: greetingSeq + 1,
+          sequence: record.wsSequence,
           timestamp: new Date().toISOString(),
           payload: {
             step: experiment.state.step,

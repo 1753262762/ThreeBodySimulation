@@ -1,0 +1,18 @@
+package com.threebody.core;
+
+/** 校验问题编码，与 contracts/openapi.yaml 的 ValidationIssue.code 保持一致。 */
+public enum ValidationCode {
+    BODY_COUNT_OUT_OF_RANGE,
+    DUPLICATE_BODY_ID,
+    MISSING_BODY_NAME,
+    INVALID_COLOR,
+    INVALID_MASS,
+    NON_FINITE_VALUE,
+    COINCIDENT_BODIES,
+    INVALID_TIME_STEP,
+    INVALID_GRAVITATIONAL_CONSTANT,
+    INVALID_SOFTENING_LENGTH,
+    MISSING_END_CONDITION,
+    MAX_STEPS_OUT_OF_RANGE,
+    TARGET_TIME_OUT_OF_RANGE
+}

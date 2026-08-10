@@ -1,0 +1,75 @@
+[
+  {
+    "key": "A",
+    "name": "方案 A · 混沌三星",
+    "description": "三个质量相近的天体构成典型混沌三体系统，长期轨道不可预测。源自旧 Swing 实现 planA。",
+    "config": {
+      "name": "方案 A · 混沌三星",
+      "bodies": [
+        { "id": "11111111-1111-4111-8111-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 2.1e8, "y": 1.2e6, "z": 0 }, "velocity": { "x": 1919, "y": 1145, "z": 0 } },
+        { "id": "11111111-1111-4111-8111-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 2.796e11, "z": 0 }, "velocity": { "x": 20000, "y": -20000, "z": 0 } },
+        { "id": "11111111-1111-4111-8111-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.0289e31, "position": { "x": -2.796e11, "y": -2.796e11, "z": 0 }, "velocity": { "x": -20000, "y": 20000, "z": 0 } }
+      ],
+      "timeStepSeconds": 43200,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 100000000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": null
+    }
+  },
+  {
+    "key": "B",
+    "name": "方案 B · 水平对称四体",
+    "description": "水平轴对称分布并附加一个离轴伴星，时间步长取四分之一以抑制漂移。源自旧 Swing 实现 planB。",
+    "config": {
+      "name": "方案 B · 水平对称四体",
+      "bodies": [
+        { "id": "22222222-2222-4222-8222-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 0, "z": 0 } },
+        { "id": "22222222-2222-4222-8222-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 20000, "z": 0 } },
+        { "id": "22222222-2222-4222-8222-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.0289e31, "position": { "x": -2.796e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": -20000, "z": 0 } },
+        { "id": "22222222-2222-4222-8222-000000000004", "name": "伴星 δ", "color": "#c084fc", "massKg": 5.289e30, "position": { "x": -4.796e11, "y": 8, "z": 9 }, "velocity": { "x": 0, "y": 0, "z": 20000 } }
+      ],
+      "timeStepSeconds": 10800,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 100000000,
+      "maxSteps": 400000,
+      "targetSimulationTimeSeconds": null
+    }
+  },
+  {
+    "key": "C",
+    "name": "方案 C · 垂直对称配置",
+    "description": "对角对称分布，第三体质量更大，系统整体偏心。源自旧 Swing 实现 planC。",
+    "config": {
+      "name": "方案 C · 垂直对称配置",
+      "bodies": [
+        { "id": "33333333-3333-4333-8333-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 0, "z": 0 } },
+        { "id": "33333333-3333-4333-8333-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 2.796e11, "z": 0 }, "velocity": { "x": 20000, "y": -20000, "z": 0 } },
+        { "id": "33333333-3333-4333-8333-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.3289e31, "position": { "x": -2.796e11, "y": -2.796e11, "z": 0 }, "velocity": { "x": -20000, "y": 20000, "z": 0 } }
+      ],
+      "timeStepSeconds": 43200,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 100000000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": null
+    }
+  },
+  {
+    "key": "D",
+    "name": "方案 D · 紧凑配置",
+    "description": "天体间距较小，相互作用更剧烈，近距离事件更频繁。源自旧 Swing 实现 planD。",
+    "config": {
+      "name": "方案 D · 紧凑配置",
+      "bodies": [
+        { "id": "44444444-4444-4444-8444-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 0, "z": 0 } },
+        { "id": "44444444-4444-4444-8444-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 2.796e11, "z": 0 }, "velocity": { "x": 20000, "y": -20000, "z": 0 } },
+        { "id": "44444444-4444-4444-8444-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.2289e31, "position": { "x": -2.796e11, "y": -2.796e11, "z": 0 }, "velocity": { "x": -20000, "y": 20000, "z": 0 } }
+      ],
+      "timeStepSeconds": 43200,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 100000000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": null
+    }
+  }
+]

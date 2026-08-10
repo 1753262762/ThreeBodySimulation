@@ -1,0 +1,19 @@
+{
+  "valid": false,
+  "issues": [
+    {
+      "field": "bodies[2].massKg",
+      "code": "INVALID_MASS",
+      "message": "质量必须为正的有限数。",
+      "severity": "ERROR"
+    },
+    {
+      "field": "timeStepSeconds",
+      "code": "INVALID_TIME_STEP",
+      "message": "时间步长相对最近天体间距过大，可能导致能量漂移超过 1%。",
+      "severity": "WARNING"
+    }
+  ],
+  "normalizedConfig": null,
+  "estimatedSteps": null
+}

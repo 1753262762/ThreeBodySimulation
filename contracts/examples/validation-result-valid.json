@@ -1,0 +1,18 @@
+{
+  "valid": true,
+  "issues": [],
+  "normalizedConfig": {
+    "name": "方案 A · 混沌三星",
+    "bodies": [
+      { "id": "11111111-1111-4111-8111-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 2.1e8, "y": 1.2e6, "z": 0 }, "velocity": { "x": 1919, "y": 1145, "z": 0 } },
+      { "id": "11111111-1111-4111-8111-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 2.796e11, "z": 0 }, "velocity": { "x": 20000, "y": -20000, "z": 0 } },
+      { "id": "11111111-1111-4111-8111-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.0289e31, "position": { "x": -2.796e11, "y": -2.796e11, "z": 0 }, "velocity": { "x": -20000, "y": 20000, "z": 0 } }
+    ],
+    "timeStepSeconds": 43200,
+    "gravitationalConstant": 6.6743e-11,
+    "softeningLengthMeters": 100000000,
+    "maxSteps": 200000,
+    "targetSimulationTimeSeconds": null
+  },
+  "estimatedSteps": 200000
+}

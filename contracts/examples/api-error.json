@@ -1,0 +1,6 @@
+{
+  "code": "ILLEGAL_STATE_TRANSITION",
+  "message": "COMPLETED 实验不能执行 PAUSE 动作。",
+  "timestamp": "2026-08-10T09:22:31Z",
+  "issues": null
+}

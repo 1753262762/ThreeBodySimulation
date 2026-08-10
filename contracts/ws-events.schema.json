@@ -1,0 +1,191 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://threebody.local/contracts/ws-events.schema.json",
+  "title": "Three Body Lab WebSocket Envelope",
+  "description": "WebSocket 地址为 /ws/v1/experiments/{id}。所有数值为 SI 单位。快照最高 30 Hz、轨迹增量 10 Hz、指标 2 Hz。sequence 在单个实验内单调递增，客户端必须丢弃不大于已处理值的消息。",
+  "type": "object",
+  "required": ["schemaVersion", "type", "experimentId", "sequence", "timestamp", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "type": {
+      "type": "string",
+      "enum": ["SNAPSHOT", "TRAJECTORY", "METRICS", "STATUS", "NEAR_ENCOUNTER", "ERROR"]
+    },
+    "experimentId": { "type": "string", "format": "uuid" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "payload": { "type": "object" }
+  },
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "SNAPSHOT" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/snapshotPayload" } } } },
+    { "if": { "properties": { "type": { "const": "TRAJECTORY" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/trajectoryPayload" } } } },
+    { "if": { "properties": { "type": { "const": "METRICS" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/metricsPayload" } } } },
+    { "if": { "properties": { "type": { "const": "STATUS" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/statusPayload" } } } },
+    { "if": { "properties": { "type": { "const": "NEAR_ENCOUNTER" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/nearEncounterPayload" } } } },
+    { "if": { "properties": { "type": { "const": "ERROR" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/errorPayload" } } } }
+  ],
+  "definitions": {
+    "vector3": {
+      "type": "object",
+      "required": ["x", "y", "z"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" }
+      }
+    },
+    "bodyState": {
+      "type": "object",
+      "required": ["id", "position", "velocity"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "position": { "$ref": "#/definitions/vector3" },
+        "velocity": { "$ref": "#/definitions/vector3" }
+      }
+    },
+    "snapshotPayload": {
+      "type": "object",
+      "required": ["step", "simulationTimeSeconds", "bodies"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "type": "integer", "minimum": 0 },
+        "simulationTimeSeconds": { "type": "number" },
+        "bodies": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 20,
+          "items": { "$ref": "#/definitions/bodyState" }
+        }
+      }
+    },
+    "trajectoryPayload": {
+      "type": "object",
+      "description": "自上一条 TRAJECTORY 消息以来新增的采样点，按 step 升序。",
+      "required": ["fromStep", "toStep", "stride", "points"],
+      "additionalProperties": false,
+      "properties": {
+        "fromStep": { "type": "integer", "minimum": 0 },
+        "toStep": { "type": "integer", "minimum": 0 },
+        "stride": { "type": "integer", "minimum": 1 },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["step", "simulationTimeSeconds", "bodies"],
+            "additionalProperties": false,
+            "properties": {
+              "step": { "type": "integer", "minimum": 0 },
+              "simulationTimeSeconds": { "type": "number" },
+              "bodies": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/bodyState" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "metricsPayload": {
+      "type": "object",
+      "required": [
+        "step",
+        "simulationTimeSeconds",
+        "kineticEnergyJoules",
+        "potentialEnergyJoules",
+        "totalEnergyJoules",
+        "initialTotalEnergyJoules",
+        "relativeEnergyDrift",
+        "angularMomentum",
+        "angularMomentumMagnitude",
+        "linearMomentum",
+        "linearMomentumMagnitude",
+        "minimumPairDistanceMeters"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "type": "integer", "minimum": 0 },
+        "simulationTimeSeconds": { "type": "number" },
+        "kineticEnergyJoules": { "type": "number" },
+        "potentialEnergyJoules": { "type": "number" },
+        "totalEnergyJoules": { "type": "number" },
+        "initialTotalEnergyJoules": { "type": "number" },
+        "relativeEnergyDrift": { "type": "number" },
+        "angularMomentum": { "$ref": "#/definitions/vector3" },
+        "angularMomentumMagnitude": { "type": "number" },
+        "linearMomentum": { "$ref": "#/definitions/vector3" },
+        "linearMomentumMagnitude": { "type": "number" },
+        "minimumPairDistanceMeters": { "type": "number" },
+        "minimumPairBodyIds": { "type": ["array", "null"], "items": { "type": "string" } },
+        "allTimeMinimumPairDistanceMeters": { "type": ["number", "null"] },
+        "allTimeMinimumPairDistanceStep": { "type": ["integer", "null"] },
+        "stepsPerSecond": { "type": ["number", "null"] },
+        "elapsedWallClockSeconds": { "type": ["number", "null"] }
+      }
+    },
+    "statusPayload": {
+      "type": "object",
+      "required": ["status", "step", "simulationTimeSeconds"],
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["QUEUED", "RUNNING", "PAUSED", "COMPLETED", "CANCELLED", "FAILED"]
+        },
+        "previousStatus": {
+          "type": ["string", "null"],
+          "enum": ["QUEUED", "RUNNING", "PAUSED", "COMPLETED", "CANCELLED", "FAILED", null]
+        },
+        "step": { "type": "integer", "minimum": 0 },
+        "simulationTimeSeconds": { "type": "number" },
+        "endReason": {
+          "type": ["string", "null"],
+          "enum": ["MAX_STEPS", "TARGET_TIME", "CANCELLED", "ERROR", null]
+        },
+        "completionRatio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "queuePosition": { "type": ["integer", "null"] },
+        "message": { "type": ["string", "null"] }
+      }
+    },
+    "nearEncounterPayload": {
+      "type": "object",
+      "required": ["step", "simulationTimeSeconds", "bodyIds", "distanceMeters", "thresholdMeters"],
+      "additionalProperties": false,
+      "properties": {
+        "step": { "type": "integer", "minimum": 0 },
+        "simulationTimeSeconds": { "type": "number" },
+        "bodyIds": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "string" } },
+        "distanceMeters": { "type": "number" },
+        "thresholdMeters": { "type": "number", "description": "固定为 5 倍软化长度" },
+        "message": { "type": ["string", "null"] }
+      }
+    },
+    "errorPayload": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "VALIDATION_FAILED",
+            "EXPERIMENT_NOT_FOUND",
+            "ILLEGAL_STATE_TRANSITION",
+            "EXPERIMENT_NOT_EDITABLE",
+            "QUEUE_CONFLICT",
+            "UNSUPPORTED_ACTION_PAYLOAD",
+            "MALFORMED_REQUEST",
+            "STORAGE_FAILURE",
+            "NUMERICAL_INSTABILITY",
+            "INTERNAL_ERROR"
+          ]
+        },
+        "message": { "type": "string" },
+        "step": { "type": ["integer", "null"] },
+        "recoverable": { "type": ["boolean", "null"] }
+      }
+    }
+  }
+}

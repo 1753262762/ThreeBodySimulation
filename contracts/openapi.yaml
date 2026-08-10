@@ -1,0 +1,803 @@
+openapi: 3.0.3
+info:
+  title: Three Body Lab Backend API
+  description: |
+    本地 N 体模拟"参数实验室"后端契约。所有数值使用 SI 单位：质量 kg、长度 m、速度 m/s、时间 s。
+    单位换算（太阳质量、AU、km/s）由前端展示层负责，接口不接受非 SI 数值。
+  version: 1.0.0
+servers:
+  - url: http://127.0.0.1:8721/api/v1
+    description: 本地服务
+tags:
+  - name: presets
+  - name: configs
+  - name: experiments
+  - name: queue
+  - name: exports
+paths:
+  /presets:
+    get:
+      tags: [presets]
+      summary: 获取内置 A-D 预设配置
+      operationId: listPresets
+      responses:
+        '200':
+          description: 预设列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Preset'
+  /configs/validate:
+    post:
+      tags: [configs]
+      summary: 校验模拟配置
+      description: 始终返回 200；配置是否合法由 valid 字段与 issues 列表表示。
+      operationId: validateConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SimulationConfig'
+      responses:
+        '200':
+          description: 校验结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /experiments:
+    get:
+      tags: [experiments]
+      summary: 按队列顺序列出实验
+      operationId: listExperiments
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: 可选状态过滤，多个值使用逗号分隔
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 实验摘要列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExperimentSummary'
+    post:
+      tags: [experiments]
+      summary: 创建实验并入队
+      operationId: createExperiment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExperimentCreateRequest'
+      responses:
+        '201':
+          description: 已创建
+          headers:
+            Location:
+              description: 新实验资源地址
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /experiments/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    get:
+      tags: [experiments]
+      summary: 获取实验完整状态
+      description: 客户端 WebSocket 重连后先调用本接口获取全量状态，再接收序列号更大的增量消息。
+      operationId: getExperiment
+      responses:
+        '200':
+          description: 实验详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [experiments]
+      summary: 编辑实验，仅 QUEUED 状态允许
+      operationId: updateExperiment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExperimentCreateRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags: [experiments]
+      summary: 删除实验及其结果文件
+      description: RUNNING 实验必须先取消；删除会返回释放的占用空间。
+      operationId: deleteExperiment
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeleteResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /experiments/{id}/actions:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    post:
+      tags: [experiments]
+      summary: 执行实验控制动作
+      operationId: submitExperimentAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExperimentActionRequest'
+      responses:
+        '200':
+          description: 动作已接受，返回最新实验状态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /queue:
+    patch:
+      tags: [queue]
+      summary: 提交完整有序实验 ID 列表以重排队列
+      description: 必须包含且只包含当前全部实验 ID；RUNNING 实验的相对位置不得改变。
+      operationId: reorderQueue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueueReorderRequest'
+      responses:
+        '200':
+          description: 重排后的实验摘要列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ExperimentSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /experiments/{id}/exports/config:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    get:
+      tags: [exports]
+      summary: 下载配置 JSON
+      operationId: exportConfig
+      responses:
+        '200':
+          description: 配置文件
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimulationConfig'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /experiments/{id}/exports/trajectory:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    get:
+      tags: [exports]
+      summary: 下载分层采样轨迹 CSV
+      description: |
+        长表格式，列为 step,timeSeconds,bodyId,bodyName,x,y,z,vx,vy,vz。
+        实际采样步长通过响应头 X-Sample-Stride 返回，同时也出现在实验详情的 trajectory.sampleStride。
+      operationId: exportTrajectory
+      responses:
+        '200':
+          description: CSV 文件
+          headers:
+            X-Sample-Stride:
+              description: 相邻采样点之间的模拟步数
+              schema:
+                type: integer
+                format: int64
+            X-Sample-Count:
+              schema:
+                type: integer
+                format: int64
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            text/csv:
+              schema:
+                type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /experiments/{id}/report-data:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    get:
+      tags: [exports]
+      summary: 获取报告页所需的聚合数据
+      operationId: getReportData
+      responses:
+        '200':
+          description: 报告数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportData'
+        '404':
+          $ref: '#/components/responses/NotFound'
+components:
+  parameters:
+    ExperimentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    BadRequest:
+      description: 请求非法
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+    Conflict:
+      description: 状态冲突
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+  schemas:
+    Vector3:
+      type: object
+      required: [x, y, z]
+      properties:
+        x:
+          type: number
+          format: double
+        y:
+          type: number
+          format: double
+        z:
+          type: number
+          format: double
+    BodySpec:
+      type: object
+      required: [name, massKg, position, velocity]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: 创建时可为空，由服务端生成
+        name:
+          type: string
+          minLength: 1
+          maxLength: 40
+        color:
+          type: string
+          description: 十六进制颜色，形如 #RRGGBB
+          pattern: '^#[0-9a-fA-F]{6}$'
+        massKg:
+          type: number
+          format: double
+          exclusiveMinimum: true
+          minimum: 0
+        position:
+          $ref: '#/components/schemas/Vector3'
+        velocity:
+          $ref: '#/components/schemas/Vector3'
+    SimulationConfig:
+      type: object
+      required: [bodies, timeStepSeconds, gravitationalConstant, softeningLengthMeters]
+      description: maxSteps 与 targetSimulationTimeSeconds 至少提供一个作为结束条件。
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        bodies:
+          type: array
+          minItems: 2
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/BodySpec'
+        timeStepSeconds:
+          type: number
+          format: double
+          exclusiveMinimum: true
+          minimum: 0
+        gravitationalConstant:
+          type: number
+          format: double
+          exclusiveMinimum: true
+          minimum: 0
+        softeningLengthMeters:
+          type: number
+          format: double
+          minimum: 0
+          description: 软化长度 epsilon，加速度使用 a = G*m*r/(r^2+epsilon^2)^(3/2)
+        maxSteps:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+        targetSimulationTimeSeconds:
+          type: number
+          format: double
+          nullable: true
+          exclusiveMinimum: true
+          minimum: 0
+    Preset:
+      type: object
+      required: [key, name, description, config]
+      properties:
+        key:
+          type: string
+          enum: [A, B, C, D]
+        name:
+          type: string
+        description:
+          type: string
+        config:
+          $ref: '#/components/schemas/SimulationConfig'
+    ValidationIssue:
+      type: object
+      required: [field, code, message, severity]
+      properties:
+        field:
+          type: string
+          description: JSON 指针风格路径，例如 bodies[2].massKg
+        code:
+          type: string
+          enum:
+            - BODY_COUNT_OUT_OF_RANGE
+            - DUPLICATE_BODY_ID
+            - MISSING_BODY_NAME
+            - INVALID_COLOR
+            - INVALID_MASS
+            - NON_FINITE_VALUE
+            - COINCIDENT_BODIES
+            - INVALID_TIME_STEP
+            - INVALID_GRAVITATIONAL_CONSTANT
+            - INVALID_SOFTENING_LENGTH
+            - MISSING_END_CONDITION
+            - MAX_STEPS_OUT_OF_RANGE
+            - TARGET_TIME_OUT_OF_RANGE
+        message:
+          type: string
+        severity:
+          type: string
+          enum: [ERROR, WARNING]
+    ValidationResult:
+      type: object
+      required: [valid, issues]
+      properties:
+        valid:
+          type: boolean
+          description: 不存在 ERROR 级问题时为 true
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationIssue'
+        normalizedConfig:
+          allOf:
+            - $ref: '#/components/schemas/SimulationConfig'
+          nullable: true
+          description: valid 为 true 时返回补齐 ID 与颜色后的配置
+        estimatedSteps:
+          type: integer
+          format: int64
+          nullable: true
+    ExperimentStatus:
+      type: string
+      enum: [QUEUED, RUNNING, PAUSED, COMPLETED, CANCELLED, FAILED]
+    EndReason:
+      type: string
+      nullable: true
+      enum: [MAX_STEPS, TARGET_TIME, CANCELLED, ERROR]
+    ExperimentCreateRequest:
+      type: object
+      required: [config]
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        config:
+          $ref: '#/components/schemas/SimulationConfig'
+    Progress:
+      type: object
+      required: [step, simulationTimeSeconds]
+      properties:
+        step:
+          type: integer
+          format: int64
+        simulationTimeSeconds:
+          type: number
+          format: double
+        maxSteps:
+          type: integer
+          format: int64
+          nullable: true
+        targetSimulationTimeSeconds:
+          type: number
+          format: double
+          nullable: true
+        completionRatio:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 1
+        stepsPerSecond:
+          type: number
+          format: double
+          nullable: true
+        estimatedRemainingSteps:
+          type: integer
+          format: int64
+          nullable: true
+    BodyState:
+      type: object
+      required: [id, position, velocity]
+      properties:
+        id:
+          type: string
+          format: uuid
+        position:
+          $ref: '#/components/schemas/Vector3'
+        velocity:
+          $ref: '#/components/schemas/Vector3'
+    SimulationState:
+      type: object
+      required: [step, simulationTimeSeconds, bodies]
+      properties:
+        step:
+          type: integer
+          format: int64
+        simulationTimeSeconds:
+          type: number
+          format: double
+        bodies:
+          type: array
+          items:
+            $ref: '#/components/schemas/BodyState'
+    Metrics:
+      type: object
+      required:
+        - kineticEnergyJoules
+        - potentialEnergyJoules
+        - totalEnergyJoules
+        - initialTotalEnergyJoules
+        - relativeEnergyDrift
+        - angularMomentum
+        - angularMomentumMagnitude
+        - linearMomentum
+        - linearMomentumMagnitude
+        - minimumPairDistanceMeters
+      properties:
+        kineticEnergyJoules:
+          type: number
+          format: double
+        potentialEnergyJoules:
+          type: number
+          format: double
+        totalEnergyJoules:
+          type: number
+          format: double
+        initialTotalEnergyJoules:
+          type: number
+          format: double
+        relativeEnergyDrift:
+          type: number
+          format: double
+          description: (E - E0) / |E0|，E0 为 0 时返回 E 的绝对漂移
+        angularMomentum:
+          $ref: '#/components/schemas/Vector3'
+        angularMomentumMagnitude:
+          type: number
+          format: double
+        linearMomentum:
+          $ref: '#/components/schemas/Vector3'
+        linearMomentumMagnitude:
+          type: number
+          format: double
+        minimumPairDistanceMeters:
+          type: number
+          format: double
+          description: 当前步的最近两体距离
+        minimumPairBodyIds:
+          type: array
+          nullable: true
+          items:
+            type: string
+        allTimeMinimumPairDistanceMeters:
+          type: number
+          format: double
+          nullable: true
+        allTimeMinimumPairDistanceStep:
+          type: integer
+          format: int64
+          nullable: true
+        stepsPerSecond:
+          type: number
+          format: double
+          nullable: true
+        elapsedWallClockSeconds:
+          type: number
+          format: double
+          nullable: true
+    SimulationEvent:
+      type: object
+      required: [sequence, type, step, simulationTimeSeconds, timestamp, message]
+      properties:
+        sequence:
+          type: integer
+          format: int64
+        type:
+          type: string
+          enum: [NEAR_ENCOUNTER, STATUS_CHANGE, NUMERICAL_WARNING, ERROR]
+        step:
+          type: integer
+          format: int64
+        simulationTimeSeconds:
+          type: number
+          format: double
+        timestamp:
+          type: string
+          format: date-time
+        message:
+          type: string
+        bodyIds:
+          type: array
+          nullable: true
+          items:
+            type: string
+        distanceMeters:
+          type: number
+          format: double
+          nullable: true
+    TrajectoryInfo:
+      type: object
+      required: [sampleStride, sampleCount, pointLimit, liveWindowSize]
+      properties:
+        sampleStride:
+          type: integer
+          format: int64
+          description: 归档采样的当前步长，达到上限后按倍数增长
+        sampleCount:
+          type: integer
+          format: int64
+        pointLimit:
+          type: integer
+          format: int64
+          description: 归档采样点上限，固定为 50000
+        liveWindowSize:
+          type: integer
+          format: int32
+          description: 实时画布每个天体保留的最近点数，固定为 2000
+    ExperimentSummary:
+      type: object
+      required: [id, name, status, queuePosition, createdAt, updatedAt, bodyCount, progress]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        status:
+          $ref: '#/components/schemas/ExperimentStatus'
+        queuePosition:
+          type: integer
+          format: int32
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        bodyCount:
+          type: integer
+          format: int32
+        progress:
+          $ref: '#/components/schemas/Progress'
+        endReason:
+          $ref: '#/components/schemas/EndReason'
+        storageBytes:
+          type: integer
+          format: int64
+        errorCode:
+          type: string
+          nullable: true
+    Experiment:
+      allOf:
+        - $ref: '#/components/schemas/ExperimentSummary'
+        - type: object
+          required: [config, trajectory, events]
+          properties:
+            config:
+              $ref: '#/components/schemas/SimulationConfig'
+            state:
+              allOf:
+                - $ref: '#/components/schemas/SimulationState'
+              nullable: true
+            metrics:
+              allOf:
+                - $ref: '#/components/schemas/Metrics'
+              nullable: true
+            trajectory:
+              $ref: '#/components/schemas/TrajectoryInfo'
+            events:
+              type: array
+              items:
+                $ref: '#/components/schemas/SimulationEvent'
+            lastSequence:
+              type: integer
+              format: int64
+              description: 已发布的最大 WebSocket 序列号，重连后据此丢弃旧消息
+            errorMessage:
+              type: string
+              nullable: true
+    ExperimentActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [PAUSE, RESUME, STEP, RESTART, CANCEL]
+        config:
+          allOf:
+            - $ref: '#/components/schemas/SimulationConfig'
+          nullable: true
+          description: 仅 RESTART 可携带新配置；其他动作必须为 null
+    QueueReorderRequest:
+      type: object
+      required: [experimentIds]
+      properties:
+        experimentIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+    DeleteResult:
+      type: object
+      required: [id, freedBytes]
+      properties:
+        id:
+          type: string
+          format: uuid
+        freedBytes:
+          type: integer
+          format: int64
+    ReportSamplePoint:
+      type: object
+      required: [step, simulationTimeSeconds, bodies]
+      properties:
+        step:
+          type: integer
+          format: int64
+        simulationTimeSeconds:
+          type: number
+          format: double
+        bodies:
+          type: array
+          items:
+            $ref: '#/components/schemas/BodyState'
+        totalEnergyJoules:
+          type: number
+          format: double
+          nullable: true
+        relativeEnergyDrift:
+          type: number
+          format: double
+          nullable: true
+        angularMomentumMagnitude:
+          type: number
+          format: double
+          nullable: true
+        minimumPairDistanceMeters:
+          type: number
+          format: double
+          nullable: true
+    ReportData:
+      type: object
+      required: [experiment, unitSystem, sampleStride, samples, generatedAt]
+      properties:
+        experiment:
+          $ref: '#/components/schemas/Experiment'
+        unitSystem:
+          type: string
+          enum: [SI]
+        sampleStride:
+          type: integer
+          format: int64
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportSamplePoint'
+        generatedAt:
+          type: string
+          format: date-time
+    ApiError:
+      type: object
+      required: [code, message, timestamp]
+      properties:
+        code:
+          type: string
+          enum:
+            - VALIDATION_FAILED
+            - EXPERIMENT_NOT_FOUND
+            - ILLEGAL_STATE_TRANSITION
+            - EXPERIMENT_NOT_EDITABLE
+            - QUEUE_CONFLICT
+            - UNSUPPORTED_ACTION_PAYLOAD
+            - MALFORMED_REQUEST
+            - STORAGE_FAILURE
+            - INTERNAL_ERROR
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        issues:
+          type: array
+          nullable: true
+          items:
+            $ref: '#/components/schemas/ValidationIssue'

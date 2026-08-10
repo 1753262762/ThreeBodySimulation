@@ -1,0 +1,106 @@
+<script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useExperimentsStore } from '../stores/experiments'
+import { EXPERIMENT_STATUS_LABELS, isTerminalStatus } from '../contracts'
+import { formatBytes, formatInteger } from '../lib/format'
+
+const store = useExperimentsStore()
+const reorderMode = ref(false)
+const reorderIds = ref<string[]>([])
+
+const queued = computed(() => store.queued)
+
+function toggleReorder(): void {
+  reorderMode.value = !reorderMode.value
+  if (reorderMode.value) {
+    reorderIds.value = [...queued.value.map((item) => item.id)]
+  }
+}
+
+function moveId(id: string, direction: -1 | 1): void {
+  const index = reorderIds.value.indexOf(id)
+  const target = index + direction
+  if (index < 0 || target < 0 || target >= reorderIds.value.length) return
+  const next = [...reorderIds.value]
+  const [moved] = next.splice(index, 1)
+  next.splice(target, 0, moved)
+  reorderIds.value = next
+}
+
+async function confirmReorder(): Promise<void> {
+  const ids = [...reorderIds.value]
+  const others = store.summaries
+    .filter((item) => item.status !== 'QUEUED')
+    .sort((a, b) => (a.queuePosition ?? 0) - (b.queuePosition ?? 0))
+    .map((item) => item.id)
+  const full = [...ids, ...others]
+  const ok = await store.reorderQueue(full)
+  if (ok) reorderMode.value = false
+}
+</script>
+
+<template>
+  <div class="queue-panel">
+    <div class="lab-title">
+      <span>任务队列</span>
+      <button class="queue-reorder-toggle" type="button" @click="toggleReorder">
+        {{ reorderMode ? '完成排序' : '拖拽排序' }}
+      </button>
+    </div>
+
+    <div v-if="reorderMode" class="reorder-box">
+      <div v-for="(id, index) in reorderIds" :key="id" class="reorder-row">
+        <span class="queue-position">{{ index + 1 }}</span>
+        <span class="queue-name">{{ store.summaries.find((item) => item.id === id)?.name ?? id }}</span>
+        <button type="button" @click="moveId(id, -1)" :disabled="index === 0">↑</button>
+        <button type="button" @click="moveId(id, 1)" :disabled="index === reorderIds.length - 1">↓</button>
+      </div>
+      <button class="apply-button compact" type="button" @click="confirmReorder">提交新顺序</button>
+    </div>
+
+    <template v-else>
+      <div v-if="store.summaries.length === 0" class="queue-empty">暂无实验，先在左侧应用参数创建实验。</div>
+      <div
+        v-for="item in store.summaries"
+        :key="item.id"
+        class="queue-item"
+        :class="{
+          'is-running': item.status === 'RUNNING',
+          'is-completed': item.status === 'COMPLETED' || item.status === 'CANCELLED',
+          'is-failed': item.status === 'FAILED',
+        }"
+      >
+        <div class="queue-item-row">
+          <span class="queue-position">
+            {{ item.status === 'QUEUED' || item.status === 'RUNNING' ? (item.queuePosition ?? 0) + 1 : '—' }}
+          </span>
+          <RouterLink class="queue-name" :to="'/experiments/' + item.id" :title="item.name">{{ item.name }}</RouterLink>
+          <span class="queue-status">{{ EXPERIMENT_STATUS_LABELS[item.status] }}</span>
+        </div>
+        <div class="queue-meta">
+          <span>{{ item.bodyCount }} 体</span>
+          <span>步骤 {{ formatInteger(item.progress.step) }}</span>
+          <span v-if="item.progress.completionRatio !== null && item.progress.completionRatio !== undefined">
+            {{ Math.round(item.progress.completionRatio * 100) }}%
+          </span>
+          <span v-if="item.storageBytes">{{ formatBytes(item.storageBytes) }}</span>
+        </div>
+        <div class="queue-progress">
+          <i :style="{ width: Math.min(100, Math.round((item.progress.completionRatio ?? 0) * 100)) + '%' }"></i>
+        </div>
+        <div class="queue-actions">
+          <button v-if="item.status === 'QUEUED'" type="button" @click="store.submitAction('CANCEL')">取消</button>
+          <button v-if="item.status === 'RUNNING'" type="button" @click="store.submitAction('PAUSE')">暂停</button>
+          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitAction('RESUME')">继续</button>
+          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitAction('STEP')">单步</button>
+          <button v-if="isTerminalStatus(item.status)" type="button" @click="store.submitAction('RESTART')">重启</button>
+          <button type="button" class="danger" @click="store.deleteExperiment(item.id)">删除</button>
+          <RouterLink v-if="item.status === 'COMPLETED'" :to="'/reports/' + item.id">报告</RouterLink>
+        </div>
+      </div>
+    </template>
+
+    <div class="queue-storage">占用空间：{{ formatBytes(store.totalStorageBytes) }}</div>
+    <div v-if="store.actionError" class="action-error">{{ store.actionError }}</div>
+  </div>
+</template>

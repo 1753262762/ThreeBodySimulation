@@ -33,6 +33,40 @@ public interface ExperimentRepository {
     void appendTrajectoryPoint(String experimentId, SimulationState state, long pointLimit);
 
     /**
+     * Batch variant used by the background archive writer. Implementations
+     * should append all points in one storage operation. The default keeps
+     * compatibility with small/in-memory repositories.
+     */
+    default void appendTrajectoryPoints(String experimentId, List<SimulationState> states, long pointLimit) {
+        for (SimulationState state : states) {
+            appendTrajectoryPoint(experimentId, state, pointLimit);
+        }
+    }
+
+    /**
+     * Atomically replaces an archive after deterministic compression.
+     * Implementations that support archival compression must override this
+     * method.  Silently appending a replacement would duplicate old points
+     * and make subsequent reads non-deterministic, so legacy repositories fail
+     * explicitly instead.
+     */
+    default void replaceTrajectoryPoints(String experimentId, List<SimulationState> states) {
+        throw new UnsupportedOperationException("atomic trajectory replacement is not supported");
+    }
+
+    /** Flushes pending archive writes for one experiment, if any. */
+    default void flushTrajectory(String experimentId) {
+    }
+
+    /** Flushes all pending archive writes. */
+    default void flushAllTrajectories() {
+    }
+
+    /** Removes an archive without deleting the experiment manifest entry. */
+    default void resetTrajectory(String experimentId) {
+    }
+
+    /**
      * 读取实验的所有归档轨迹点。
      *
      * @param experimentId 实验 ID

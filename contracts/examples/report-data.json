@@ -59,7 +59,7 @@
       "sampleStride": 8,
       "sampleCount": 25000,
       "pointLimit": 50000,
-      "liveWindowSize": 2000
+      "liveWindowSize": 8000
     },
     "events": [
       {

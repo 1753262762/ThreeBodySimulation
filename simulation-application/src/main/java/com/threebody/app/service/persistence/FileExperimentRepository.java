@@ -13,17 +13,9 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-import com.threebody.app.domain.EndReason;
 import com.threebody.app.domain.Experiment;
-import com.threebody.app.domain.ExperimentMetrics;
-import com.threebody.app.domain.ExperimentStatus;
-import com.threebody.app.domain.SimulationEvent;
-import com.threebody.app.domain.SimulationEventType;
-import com.threebody.app.domain.TrajectoryInfo;
 import com.threebody.app.service.ExperimentRepository;
-import com.threebody.core.BodySpec;
 import com.threebody.core.BodyState;
-import com.threebody.core.SimulationConfig;
 import com.threebody.core.SimulationState;
 import com.threebody.core.Vector3;
 
@@ -36,23 +28,13 @@ import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
-/**
- * 基于 JSON 文件的实验持久化实现。
- *
- * <p>
- * Windows 数据目录为 {@code %LOCALAPPDATA%/ThreeBodyLab}，
- * 其他平台回退到 {@code ${user.home}/.threebody-lab}。
- * 使用临时文件加原子替换写入；损坏文件隔离至 {@code .corrupted/}。
- * </p>
- */
+/** File-backed experiment and JSONL trajectory repository. */
 public class FileExperimentRepository implements ExperimentRepository {
 
     private static final String DATA_DIR_NAME = "ThreeBodyLab";
@@ -63,14 +45,12 @@ public class FileExperimentRepository implements ExperimentRepository {
     private final ObjectMapper mapper;
     private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
 
+    /** Per-experiment metadata; the trajectory body is never retained here. */
+    private final Map<String, Long> trajectoryCounts = new ConcurrentHashMap<>();
+    private final Set<String> trajectoryMetadataLoaded = ConcurrentHashMap.newKeySet();
+
     public FileExperimentRepository() {
-        this.dataDir = resolveDataDir();
-        this.mapper = createObjectMapper();
-        try {
-            Files.createDirectories(dataDir);
-        } catch (IOException e) {
-            throw new UncheckedIOException("无法创建数据目录：" + dataDir, e);
-        }
+        this(resolveDataDir());
     }
 
     public FileExperimentRepository(Path dataDir) {
@@ -79,7 +59,7 @@ public class FileExperimentRepository implements ExperimentRepository {
         try {
             Files.createDirectories(dataDir);
         } catch (IOException e) {
-            throw new UncheckedIOException("无法创建数据目录：" + dataDir, e);
+            throw new UncheckedIOException("unable to create data directory " + dataDir, e);
         }
     }
 
@@ -94,8 +74,6 @@ public class FileExperimentRepository implements ExperimentRepository {
     public Path dataDir() {
         return dataDir;
     }
-
-    // ============================ 读 ============================
 
     @Override
     public List<Experiment> listAll() {
@@ -113,16 +91,13 @@ public class FileExperimentRepository implements ExperimentRepository {
             return List.of();
         }
         try {
-            String json = Files.readString(manifest);
-            ExperimentList list = mapper.readValue(json, ExperimentList.class);
+            ExperimentList list = mapper.readValue(Files.readString(manifest), ExperimentList.class);
             return list.experiments != null ? list.experiments : List.of();
         } catch (IOException e) {
             handleCorruptedManifest(manifest, e);
             return List.of();
         }
     }
-
-    // ============================ 写 ============================
 
     @Override
     public void save(Experiment experiment) {
@@ -140,14 +115,11 @@ public class FileExperimentRepository implements ExperimentRepository {
             if (!found) {
                 all.add(experiment);
             }
-            // 保持与内存队列一致的顺序
             writeAll(all);
         } finally {
             rwLock.writeLock().unlock();
         }
     }
-
-    // ============================ 删 ============================
 
     @Override
     public long delete(String id) {
@@ -155,19 +127,19 @@ public class FileExperimentRepository implements ExperimentRepository {
         try {
             List<Experiment> all = new ArrayList<>(listAllInternal());
             long freedBytes = storageBytesInternal(id);
-            all.removeIf(e -> e.id().equals(id));
+            all.removeIf(experiment -> experiment.id().equals(id));
             writeAll(all);
-
-            // 删除关联的轨迹文件（如果存在）
-            Path trajFile = dataDir.resolve("trajectory-" + id + ".json");
+            Path trajectory = trajectoryPath(id);
             try {
-                if (Files.exists(trajFile)) {
-                    freedBytes += Files.size(trajFile);
-                    Files.deleteIfExists(trajFile);
+                if (Files.exists(trajectory)) {
+                    freedBytes += Files.size(trajectory);
+                    Files.deleteIfExists(trajectory);
                 }
             } catch (IOException ignored) {
+                // Deletion remains best-effort for accounting compatibility.
             }
-
+            trajectoryCounts.remove(id);
+            trajectoryMetadataLoaded.remove(id);
             return freedBytes;
         } finally {
             rwLock.writeLock().unlock();
@@ -185,43 +157,87 @@ public class FileExperimentRepository implements ExperimentRepository {
     }
 
     private long storageBytesInternal(String id) {
-        Path manifest = dataDir.resolve(EXPERIMENTS_FILE);
         long bytes = 0;
+        Path manifest = dataDir.resolve(EXPERIMENTS_FILE);
         try {
             if (Files.exists(manifest)) {
                 bytes += Files.size(manifest) / Math.max(1, listAllInternal().size());
             }
-        } catch (IOException ignored) {
-        }
-        Path trajFile = dataDir.resolve("trajectory-" + id + ".json");
-        try {
-            if (Files.exists(trajFile)) {
-                bytes += Files.size(trajFile);
+            Path trajectory = trajectoryPath(id);
+            if (Files.exists(trajectory)) {
+                bytes += Files.size(trajectory);
             }
         } catch (IOException ignored) {
         }
         return bytes;
     }
 
-    // ============================ 轨迹持久化 ============================
-
     @Override
     public void appendTrajectoryPoint(String experimentId, SimulationState state, long pointLimit) {
-        Path trajFile = dataDir.resolve("trajectory-" + experimentId + ".json");
+        appendTrajectoryPoints(experimentId, List.of(state), pointLimit);
+    }
+
+    @Override
+    public void appendTrajectoryPoints(String experimentId, List<SimulationState> states, long pointLimit) {
+        if (states == null || states.isEmpty()) {
+            return;
+        }
         rwLock.writeLock().lock();
         try {
-            // 将当前状态序列化为一条 JSON 行（JSON Lines 格式，便于追加）
-            TrajectoryPointRecord record = TrajectoryPointRecord.from(state);
-            String line = mapper.writeValueAsString(record) + System.lineSeparator();
-            Files.writeString(trajFile, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-
-            // 检查是否需要降采样：超过 pointLimit 时减半
-            long lineCount = countTrajectoryLines(trajFile);
-            if (lineCount > pointLimit) {
-                downsampleTrajectory(trajFile, pointLimit / 2);
+            long currentCount = ensureTrajectoryMetadata(experimentId);
+            List<SimulationState> validStates = states.stream().filter(state -> state != null).toList();
+            if (validStates.isEmpty()) {
+                return;
+            }
+            writeTrajectoryLines(experimentId, validStates, StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND);
+            currentCount += validStates.size();
+            trajectoryCounts.put(experimentId, currentCount);
+            if (currentCount > Math.max(1L, pointLimit)) {
+                List<SimulationState> all = readTrajectoryFile(experimentId);
+                long limit = Math.max(1L, pointLimit);
+                int target = limit == 1L ? 1
+                        : (int) Math.min((long) all.size(), Math.max(2L, limit / 2L));
+                replaceTrajectoryPointsInternal(experimentId, uniformlySample(all, target));
             }
         } catch (IOException e) {
-            System.err.println("[ThreeBodyLab] 轨迹归档写入失败：" + e.getMessage());
+            throw new UncheckedIOException("trajectory archive append failed", e);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
+    @Override
+    public void replaceTrajectoryPoints(String experimentId, List<SimulationState> states) {
+        rwLock.writeLock().lock();
+        try {
+            replaceTrajectoryPointsInternal(experimentId, states == null ? List.of() : states);
+        } catch (IOException e) {
+            throw new UncheckedIOException("trajectory archive replace failed", e);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
+    @Override
+    public void flushTrajectory(String experimentId) {
+        // File writes are synchronous; this method completes the common API.
+    }
+
+    @Override
+    public void flushAllTrajectories() {
+        // File writes are synchronous; this method completes the common API.
+    }
+
+    @Override
+    public void resetTrajectory(String experimentId) {
+        rwLock.writeLock().lock();
+        try {
+            Files.deleteIfExists(trajectoryPath(experimentId));
+            trajectoryCounts.remove(experimentId);
+            trajectoryMetadataLoaded.remove(experimentId);
+        } catch (IOException e) {
+            throw new UncheckedIOException("trajectory archive reset failed", e);
         } finally {
             rwLock.writeLock().unlock();
         }
@@ -229,80 +245,125 @@ public class FileExperimentRepository implements ExperimentRepository {
 
     @Override
     public List<SimulationState> loadTrajectory(String experimentId) {
-        Path trajFile = dataDir.resolve("trajectory-" + experimentId + ".json");
-        rwLock.readLock().lock();
+        rwLock.writeLock().lock();
         try {
-            if (!Files.isRegularFile(trajFile)) {
-                return List.of();
-            }
-            List<String> lines = Files.readAllLines(trajFile);
-            List<SimulationState> states = new ArrayList<>(lines.size());
-            for (String line : lines) {
-                if (line.isBlank()) continue;
+            List<SimulationState> states = readTrajectoryFile(experimentId);
+            trajectoryCounts.put(experimentId, (long) states.size());
+            trajectoryMetadataLoaded.add(experimentId);
+            return List.copyOf(states);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
+    private long ensureTrajectoryMetadata(String experimentId) throws IOException {
+        if (trajectoryMetadataLoaded.contains(experimentId)) {
+            return trajectoryCounts.getOrDefault(experimentId, 0L);
+        }
+        List<SimulationState> states = readTrajectoryFile(experimentId);
+        long count = states.size();
+        trajectoryCounts.put(experimentId, count);
+        trajectoryMetadataLoaded.add(experimentId);
+        return count;
+    }
+
+    private List<SimulationState> readTrajectoryFile(String experimentId) {
+        Path trajectory = trajectoryPath(experimentId);
+        if (!Files.isRegularFile(trajectory)) {
+            return new ArrayList<>();
+        }
+        try {
+            List<SimulationState> states = new ArrayList<>();
+            for (String line : Files.readAllLines(trajectory)) {
+                if (line.isBlank()) {
+                    continue;
+                }
                 try {
-                    TrajectoryPointRecord record = mapper.readValue(line, TrajectoryPointRecord.class);
-                    states.add(record.toSimulationState());
-                } catch (IOException e) {
-                    // 跳过损坏行
-                    System.err.println("[ThreeBodyLab] 跳过损坏的轨迹行：" + e.getMessage());
+                    states.add(mapper.readValue(line, TrajectoryPointRecord.class).toSimulationState());
+                } catch (IOException malformed) {
+                    System.err.println("[ThreeBodyLab] skipped malformed trajectory line: "
+                            + malformed.getMessage());
                 }
             }
-            return Collections.unmodifiableList(states);
+            return states;
         } catch (IOException e) {
-            System.err.println("[ThreeBodyLab] 轨迹文件读取失败：" + e.getMessage());
-            return List.of();
-        } finally {
-            rwLock.readLock().unlock();
+            throw new UncheckedIOException("trajectory archive read failed", e);
         }
     }
 
-    private static long countTrajectoryLines(Path trajFile) throws IOException {
-        try (var lines = Files.lines(trajFile)) {
-            return lines.count();
+    private void replaceTrajectoryPointsInternal(String experimentId, List<SimulationState> states)
+            throws IOException {
+        List<SimulationState> replacement = new ArrayList<>(states);
+        Path trajectory = trajectoryPath(experimentId);
+        Path temporary = dataDir.resolve(trajectory.getFileName() + ".tmp");
+        StringBuilder content = new StringBuilder();
+        for (SimulationState state : replacement) {
+            content.append(mapper.writeValueAsString(TrajectoryPointRecord.from(state)))
+                    .append(System.lineSeparator());
         }
-    }
-
-    /**
-     * 降采样：保留每隔一行的数据，将文件行数减少至目标值附近。
-     */
-    private void downsampleTrajectory(Path trajFile, long targetCount) throws IOException {
-        List<String> lines = Files.readAllLines(trajFile);
-        if (lines.size() <= targetCount) return;
-        List<String> sampled = new ArrayList<>();
-        long stride = Math.max(2, lines.size() / (int) targetCount);
-        for (int i = 0; i < lines.size(); i += (int) stride) {
-            sampled.add(lines.get(i));
-        }
-        Path tmp = dataDir.resolve(trajFile.getFileName() + ".tmp");
-        Files.writeString(tmp, String.join("", sampled));
+        Files.writeString(temporary, content.toString(), StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
         try {
-            Files.move(tmp, trajFile, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(tmp, trajFile, StandardCopyOption.REPLACE_EXISTING);
+            Files.move(temporary, trajectory, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException unsupported) {
+            Files.deleteIfExists(temporary);
+            throw unsupported;
         }
+        trajectoryCounts.put(experimentId, (long) replacement.size());
+        trajectoryMetadataLoaded.add(experimentId);
     }
 
-    // ============================ 内部 ============================
+    private void writeTrajectoryLines(String experimentId, List<SimulationState> states,
+            StandardOpenOption... options) throws IOException {
+        StringBuilder content = new StringBuilder();
+        for (SimulationState state : states) {
+            content.append(mapper.writeValueAsString(TrajectoryPointRecord.from(state)))
+                    .append(System.lineSeparator());
+        }
+        Files.writeString(trajectoryPath(experimentId), content.toString(), options);
+    }
+
+    private Path trajectoryPath(String experimentId) {
+        return dataDir.resolve("trajectory-" + experimentId + ".json");
+    }
+
+    private static List<SimulationState> uniformlySample(List<SimulationState> points, int target) {
+        if (target >= points.size()) {
+            return new ArrayList<>(points);
+        }
+        if (target <= 1) {
+            return points.isEmpty() ? List.of() : List.of(points.get(0));
+        }
+        List<SimulationState> sampled = new ArrayList<>(target);
+        for (int i = 0; i < target; i++) {
+            int index = (int) Math.round((double) i * (points.size() - 1) / (target - 1));
+            sampled.add(points.get(index));
+        }
+        return sampled;
+    }
 
     private void writeAll(List<Experiment> experiments) {
         Path manifest = dataDir.resolve(EXPERIMENTS_FILE);
-        Path tmp = dataDir.resolve(EXPERIMENTS_FILE + ".tmp");
+        Path temporary = dataDir.resolve(EXPERIMENTS_FILE + ".tmp");
         try {
             ExperimentList list = new ExperimentList();
             list.experiments = experiments;
-            String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(list);
-            Files.writeString(tmp, json);
+            Files.writeString(temporary, mapper.writerWithDefaultPrettyPrinter().writeValueAsString(list),
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE);
             try {
-                Files.move(tmp, manifest, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException e) {
-                Files.move(tmp, manifest, StandardCopyOption.REPLACE_EXISTING);
+                Files.move(temporary, manifest, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temporary, manifest, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException e) {
             try {
-                Files.deleteIfExists(tmp);
+                Files.deleteIfExists(temporary);
             } catch (IOException ignored) {
             }
-            throw new UncheckedIOException("无法写入实验清单：" + manifest, e);
+            throw new UncheckedIOException("unable to write experiment manifest", e);
         }
     }
 
@@ -313,13 +374,13 @@ public class FileExperimentRepository implements ExperimentRepository {
             String timestamp = java.time.Instant.now().toString().replace(":", "-");
             Path target = corruptedDir.resolve(EXPERIMENTS_FILE + "." + timestamp);
             Files.move(manifest, target, StandardCopyOption.ATOMIC_MOVE);
-            System.err.println("[ThreeBodyLab] 实验清单已损坏，已隔离至：" + target + " 原因：" + cause.getMessage());
+            System.err.println("[ThreeBodyLab] moved corrupt manifest to " + target + ": "
+                    + cause.getMessage());
         } catch (IOException moveFailed) {
-            System.err.println("[ThreeBodyLab] 无法隔离损坏的实验清单：" + moveFailed.getMessage());
+            System.err.println("[ThreeBodyLab] unable to isolate corrupt manifest: "
+                    + moveFailed.getMessage());
         }
     }
-
-    // ============================ JSON 序列化 ============================
 
     private static ObjectMapper createObjectMapper() {
         ObjectMapper mapper = JsonMapper.builder()
@@ -329,35 +390,20 @@ public class FileExperimentRepository implements ExperimentRepository {
                 .configure(JsonParser.Feature.AUTO_CLOSE_SOURCE, false)
                 .serializationInclusion(JsonInclude.Include.NON_NULL)
                 .build();
-
-        // 增大嵌套深度与字符串长度限制，兼容大型实验数据
-        mapper.getFactory().setStreamReadConstraints(
-                StreamReadConstraints.builder()
-                        .maxNestingDepth(2000)
-                        .maxStringLength(50_000_000)
-                        .maxNumberLength(2000)
-                        .build());
-
+        mapper.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
+                .maxNestingDepth(2000).maxStringLength(50_000_000)
+                .maxNumberLength(2000).build());
         mapper.registerModule(new JavaTimeModule());
         mapper.registerModule(new Jdk8Module());
         mapper.setVisibility(PropertyAccessor.FIELD, JsonAutoDetect.Visibility.ANY);
-
-        // 序列化时使用简单字段名（无需注解）
         return mapper;
     }
 
-    /**
-     * 拓扑排序：先写实验数组中最独立的对象。
-     */
     @JsonIgnoreProperties(ignoreUnknown = true)
     private static class ExperimentList {
         public List<Experiment> experiments = new ArrayList<>();
     }
 
-    /**
-     * 归档轨迹点的 JSON 序列化载体。
-     * 使用简单字段以减少 JSON 体积。
-     */
     @JsonIgnoreProperties(ignoreUnknown = true)
     private static class TrajectoryPointRecord {
         public long step;
@@ -365,15 +411,16 @@ public class FileExperimentRepository implements ExperimentRepository {
         public List<BodyRecord> bodies;
 
         static TrajectoryPointRecord from(SimulationState state) {
-            TrajectoryPointRecord r = new TrajectoryPointRecord();
-            r.step = state.step();
-            r.timeSeconds = state.simulationTimeSeconds();
-            r.bodies = state.bodies().stream().map(BodyRecord::from).toList();
-            return r;
+            TrajectoryPointRecord record = new TrajectoryPointRecord();
+            record.step = state.step();
+            record.timeSeconds = state.simulationTimeSeconds();
+            record.bodies = state.bodies().stream().map(BodyRecord::from).toList();
+            return record;
         }
 
         SimulationState toSimulationState() {
-            List<BodyState> bodyStates = bodies.stream().map(BodyRecord::toBodyState).toList();
+            List<BodyState> bodyStates = bodies == null ? List.of()
+                    : bodies.stream().map(BodyRecord::toBodyState).toList();
             return new SimulationState(step, timeSeconds, bodyStates);
         }
     }
@@ -384,16 +431,16 @@ public class FileExperimentRepository implements ExperimentRepository {
         public double px, py, pz;
         public double vx, vy, vz;
 
-        static BodyRecord from(BodyState b) {
-            BodyRecord r = new BodyRecord();
-            r.id = b.id();
-            r.px = b.position().x();
-            r.py = b.position().y();
-            r.pz = b.position().z();
-            r.vx = b.velocity().x();
-            r.vy = b.velocity().y();
-            r.vz = b.velocity().z();
-            return r;
+        static BodyRecord from(BodyState body) {
+            BodyRecord record = new BodyRecord();
+            record.id = body.id();
+            record.px = body.position().x();
+            record.py = body.position().y();
+            record.pz = body.position().z();
+            record.vx = body.velocity().x();
+            record.vy = body.velocity().y();
+            record.vz = body.velocity().z();
+            return record;
         }
 
         BodyState toBodyState() {

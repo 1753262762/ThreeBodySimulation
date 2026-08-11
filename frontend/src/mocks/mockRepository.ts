@@ -19,7 +19,7 @@ import { closestPair, computeMetrics, rk4Step, type MockBody, type MockState } f
 import presetsFixture from '../../../contracts/examples/presets.json'
 
 const ARCHIVE_LIMIT = 50000
-const LIVE_WINDOW = 2000
+const LIVE_WINDOW = 8000
 
 export const mockPresets = presetsFixture as unknown as Preset[]
 

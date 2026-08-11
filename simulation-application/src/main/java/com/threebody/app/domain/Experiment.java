@@ -42,7 +42,7 @@ public final class Experiment {
         this.status = ExperimentStatus.QUEUED;
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
-        this.trajectoryInfo = new TrajectoryInfo(1L, 0L, 50_000L, 2_000);
+        this.trajectoryInfo = new TrajectoryInfo(1L, 0L, 50_000L, 8_000);
     }
 
     @JsonCreator
@@ -78,7 +78,7 @@ public final class Experiment {
         }
         this.trajectoryInfo = trajectoryInfo != null
                 ? trajectoryInfo
-                : new TrajectoryInfo(1L, 0L, 50_000L, 2_000);
+                : new TrajectoryInfo(1L, 0L, 50_000L, 8_000);
         this.lastSequence = lastSequence;
         this.errorMessage = errorMessage;
     }

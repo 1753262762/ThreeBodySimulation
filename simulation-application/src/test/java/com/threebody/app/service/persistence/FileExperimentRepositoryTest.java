@@ -205,7 +205,24 @@ class FileExperimentRepositoryTest {
     }
 
     @Test
-    @DisplayName("空实验的轨迹加载返回空列表")
+    @DisplayName("批量追加与原子替换保持 JSONL 首尾和换行")
+    void batchAppendAndAtomicReplaceRoundTrip() throws Exception {
+        String expId = "traj-batch";
+        repo.appendTrajectoryPoints(expId,
+                List.of(createTestState(0, 0), createTestState(5, 5), createTestState(10, 10)),
+                50_000L);
+        repo.replaceTrajectoryPoints(expId, List.of(createTestState(0, 0), createTestState(100, 100)));
+
+        Path trajectory = tempDir.resolve("trajectory-" + expId + ".json");
+        String raw = Files.readString(trajectory);
+        assertTrue(raw.endsWith(System.lineSeparator()));
+        assertTrue(raw.lines().allMatch(line -> !line.isBlank()));
+        List<SimulationState> loaded = repo.loadTrajectory(expId);
+        assertEquals(List.of(0L, 100L), loaded.stream().map(SimulationState::step).toList());
+    }
+
+    @Test
+    @DisplayName("loadTrajectory of missing experiment returns empty")
     void loadTrajectoryOfNonexistentReturnsEmpty() {
         List<SimulationState> loaded = repo.loadTrajectory("nonexistent");
         assertNotNull(loaded);

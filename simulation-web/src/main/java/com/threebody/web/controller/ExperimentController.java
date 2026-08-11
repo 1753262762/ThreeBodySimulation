@@ -257,6 +257,7 @@ public class ExperimentController {
     public ResponseEntity<String> exportTrajectory(@PathVariable("id") String id) {
         Experiment e = service.getExperiment(id);
         if (e == null) throw new ExperimentNotFoundException(id);
+        service.flushTrajectory(id);
 
         StringBuilder csv = new StringBuilder("step,timeSeconds,bodyId,bodyName,x,y,z,vx,vy,vz\n");
 
@@ -314,6 +315,7 @@ public class ExperimentController {
     public Map<String, Object> getReportData(@PathVariable("id") String id) {
         Experiment e = service.getExperiment(id);
         if (e == null) throw new ExperimentNotFoundException(id);
+        service.flushTrajectory(id);
 
         Map<String, Object> report = new LinkedHashMap<>();
         report.put("experiment", toExperimentDto(e, service.getQueuePosition(id), service.getStorageBytes(id)));

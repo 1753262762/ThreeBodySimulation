@@ -12,6 +12,7 @@ import com.threebody.app.domain.TrajectoryInfo;
 import com.threebody.app.event.ExperimentEventListener;
 import com.threebody.app.event.ExperimentMessage;
 import com.threebody.app.event.ExperimentMessageType;
+import com.threebody.app.event.AsyncExperimentEventDispatcher;
 import com.threebody.core.BodySpec;
 import com.threebody.core.BodyState;
 import com.threebody.core.Metrics;
@@ -30,18 +31,19 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 
 /**
  * 实验调度核心服务：管理队列、状态机、工作线程与事件广播。
@@ -53,26 +55,42 @@ import java.util.function.Consumer;
  */
 public class ExperimentService implements AutoCloseable {
 
-    /** 快照发射间隔（步数），目标 ~30 Hz。 */
-    static final long SNAPSHOT_INTERVAL = 10;
+    /** Wall-clock publication ceilings, independent of simulation SPS. */
+    static final double SNAPSHOT_HZ = 60.0;
+    static final double TRAJECTORY_HZ = 60.0;
+    static final double METRICS_HZ = 2.0;
+    static final long SNAPSHOT_PERIOD_NANOS = 1_000_000_000L / 60L;
+    static final long TRAJECTORY_PERIOD_NANOS = 1_000_000_000L / 60L;
+    static final long METRICS_PERIOD_NANOS = 1_000_000_000L / 2L;
 
-    /** 轨迹增量发射间隔（步数），目标 ~10 Hz。 */
-    static final long TRAJECTORY_INTERVAL = 30;
+    /**
+     * Fast presets used to finish before the browser could display more than
+     * one or two states.  Spread sufficiently large finite runs over at least
+     * this many snapshot periods while still allowing expensive integrations
+     * to run at their natural speed.
+    */
+    static final long TARGET_VISIBLE_SNAPSHOT_FRAMES = 240L;
+    private static final long PACER_POLL_NANOS = 2_000_000L;
 
-    /** 指标发射间隔（步数），目标 ~2 Hz。 */
-    static final long METRICS_INTERVAL = 150;
+    /** Kept for source compatibility with callers that used the old constants. */
+    @Deprecated static final long SNAPSHOT_INTERVAL = 10;
+    @Deprecated static final long TRAJECTORY_INTERVAL = 30;
+    @Deprecated static final long METRICS_INTERVAL = 150;
 
     /** 归档采样上限。 */
     static final long ARCHIVE_POINT_LIMIT = 50_000L;
 
     /** 实时窗口每个天体点数上限。 */
-    static final int LIVE_WINDOW_SIZE = 2_000;
+    static final int LIVE_WINDOW_SIZE = 8_000;
 
     /** 事件列表上限。 */
     static final int MAX_EVENTS = 1_000;
 
     private final ExperimentRepository repository;
-    private final List<ExperimentEventListener> listeners = new CopyOnWriteArrayList<>();
+    private final MonotonicClock monotonicClock;
+    private final boolean realtimePacing;
+    private final AsyncExperimentEventDispatcher eventDispatcher;
+    private final ArchiveBatchWriter archiveWriter;
 
     /** 有序队列；仅服务写入，REST 线程只能通过 getExperiments() 读取。 */
     private final List<String> queue = new ArrayList<>();
@@ -102,13 +120,37 @@ public class ExperimentService implements AutoCloseable {
     private final AtomicBoolean closing = new AtomicBoolean(false);
 
     /** 事件序号（每实验独立）。 */
-    private final Map<String, AtomicLong> eventSequences = new LinkedHashMap<>();
+    private final Map<String, AtomicLong> eventSequences = new ConcurrentHashMap<>();
+
+    /** Serializes sequence allocation with event enqueue per experiment. */
+    private final Map<String, Object> publicationLocks = new ConcurrentHashMap<>();
 
     /** 用于抽样指标的墙钟计时。 */
     private volatile long lastMetricsWallTime = 0L;
 
+    /** Active near-encounter pairs; events are emitted only on entry edges. */
+    private final Map<String, Double> activeNearEncounters = new LinkedHashMap<>();
+
     public ExperimentService(ExperimentRepository repository) {
+        this(repository, (MonotonicClock) System::nanoTime, true);
+    }
+
+    public ExperimentService(ExperimentRepository repository, LongSupplier monotonicClock) {
+        this(repository, monotonicClock == null
+                ? null : (MonotonicClock) monotonicClock::getAsLong);
+    }
+
+    public ExperimentService(ExperimentRepository repository, MonotonicClock monotonicClock) {
+        this(repository, monotonicClock, false);
+    }
+
+    ExperimentService(ExperimentRepository repository, MonotonicClock monotonicClock,
+            boolean realtimePacing) {
         this.repository = repository;
+        this.monotonicClock = monotonicClock != null ? monotonicClock : System::nanoTime;
+        this.realtimePacing = realtimePacing;
+        this.eventDispatcher = new AsyncExperimentEventDispatcher();
+        this.archiveWriter = new ArchiveBatchWriter(repository, this.monotonicClock);
     }
 
     // ============================ 生命周期 ============================
@@ -117,11 +159,22 @@ public class ExperimentService implements AutoCloseable {
     public void initialize() {
         List<Experiment> restored = repository.listAll();
         for (Experiment e : restored) {
+            boolean metadataChanged = false;
             eventSequences.putIfAbsent(e.id(), new AtomicLong(e.lastSequence()));
+            TrajectoryInfo trajectoryInfo = e.trajectoryInfo();
+            if (trajectoryInfo.liveWindowSize() != LIVE_WINDOW_SIZE) {
+                e.setTrajectoryInfo(new TrajectoryInfo(
+                        trajectoryInfo.sampleStride(), trajectoryInfo.sampleCount(),
+                        trajectoryInfo.pointLimit(), LIVE_WINDOW_SIZE));
+                metadataChanged = true;
+            }
             if (e.status() == ExperimentStatus.RUNNING) {
                 e.setStatus(ExperimentStatus.PAUSED);
                 e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE,
                         "应用重启，实验由 RUNNING 恢复为 PAUSED，请手动继续。"));
+                metadataChanged = true;
+            }
+            if (metadataChanged) {
                 repository.save(e);
             }
             experiments.put(e.id(), e);
@@ -149,13 +202,19 @@ public class ExperimentService implements AutoCloseable {
             Thread.currentThread().interrupt();
         }
 
+        try {
+            archiveWriter.close();
+        } catch (RuntimeException ex) {
+            System.err.println("[ThreeBodyLab] archive writer close failed: " + ex.getMessage());
+        }
+
         // 保存所有实验的最终状态
         synchronized (queue) {
             for (Experiment e : experiments.values()) {
                 if (e.status() == ExperimentStatus.RUNNING) {
                     e.setStatus(ExperimentStatus.PAUSED);
                     e.addEvent(new SimulationEvent(
-                            eventSequences.get(e.id()).incrementAndGet(),
+                            nextSequence(e),
                             SimulationEventType.STATUS_CHANGE,
                             e.step(), e.simulationTimeSeconds(), Instant.now(),
                             "应用关闭，实验暂停。", null, null));
@@ -167,16 +226,17 @@ public class ExperimentService implements AutoCloseable {
                 }
             }
         }
+        eventDispatcher.close();
     }
 
     // ============================ 事件监听 ============================
 
     public void addEventListener(ExperimentEventListener listener) {
-        listeners.add(listener);
+        eventDispatcher.addListener(listener);
     }
 
     public void removeEventListener(ExperimentEventListener listener) {
-        listeners.remove(listener);
+        eventDispatcher.removeListener(listener);
     }
 
     // ============================ 查询 ============================
@@ -220,6 +280,11 @@ public class ExperimentService implements AutoCloseable {
 
     public long getStorageBytes(String id) {
         return repository.storageBytes(id);
+    }
+
+    /** Flushes archive batches before an export/report read. */
+    public void flushTrajectory(String id) {
+        archiveWriter.flush(id);
     }
 
     // ============================ 创建与编辑 ============================
@@ -271,6 +336,10 @@ public class ExperimentService implements AutoCloseable {
                     } else if (e.status() == ExperimentStatus.QUEUED) {
                         // 队首 QUEUED 实验暂停：标记为 PAUSED，不启动
                         e.setStatus(ExperimentStatus.PAUSED);
+                        if (!flushArchive(e)) {
+                            scheduleNext();
+                            return e;
+                        }
                         e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "实验已暂停。"));
                         repository.save(e);
                         broadcastStatus(e, ExperimentStatus.PAUSED, ExperimentStatus.QUEUED, "实验已暂停。");
@@ -308,6 +377,14 @@ public class ExperimentService implements AutoCloseable {
                 }
                 case RESTART -> {
                     assertTransition(e, ExperimentAction.RESTART);
+                    try {
+                        archiveWriter.discard(e.id());
+                    } catch (RuntimeException failure) {
+                        recordArchiveFailure(e, failure);
+                        return e;
+                    }
+                    repository.resetTrajectory(e.id());
+                    archiveWriter.reopen(e.id());
                     ExperimentStatus previousStatus = e.status();
                     SimulationConfig newConfig = restartConfig != null ? restartConfig : e.config();
                     e.setConfig(newConfig);
@@ -333,12 +410,22 @@ public class ExperimentService implements AutoCloseable {
                         cancelToken.set(true);
                     }
                     ExperimentStatus prevStatus = e.status();
+                    if (e.status() != ExperimentStatus.RUNNING) {
+                        if (!flushArchive(e)) {
+                            scheduleNext();
+                            return e;
+                        }
+                    }
                     e.setEndReason(EndReason.CANCELLED);
                     e.setStatus(ExperimentStatus.CANCELLED);
                     e.setCompletedAt(Instant.now());
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "实验已取消。"));
                     repository.save(e);
                     broadcastStatus(e, ExperimentStatus.CANCELLED, prevStatus, "实验已取消。");
+                    // A queued cancellation has no state and must not invent
+                    // one; running/paused experiments publish their current
+                    // authoritative state exactly as it exists.
+                    publishAuthoritativeState(e, e.state());
                     scheduleNext();
                 }
             }
@@ -395,9 +482,11 @@ public class ExperimentService implements AutoCloseable {
                 throw new IllegalStateTransitionException(e.status(), ExperimentAction.CANCEL,
                         "RUNNING 实验必须先取消再删除");
             }
+            archiveWriter.discard(id);
             queue.remove(id);
             experiments.remove(id);
             eventSequences.remove(id);
+            publicationLocks.remove(id);
         }
         return repository.delete(id);
     }
@@ -457,12 +546,15 @@ public class ExperimentService implements AutoCloseable {
 
         SimulationConfig config = e.config();
         SimulationState state = e.state();
-        TrajectoryInfo traj = e.trajectoryInfo();
 
         // 初始化
         if (state == null) {
             state = NBodyIntegrator.initialState(config);
             e.setState(state);
+            long initialStride = initialArchiveStride(config);
+            e.setTrajectoryInfo(new TrajectoryInfo(initialStride, 0L,
+                    ARCHIVE_POINT_LIMIT, LIVE_WINDOW_SIZE));
+            offerArchivePoint(e, state, true);
 
             // 计算初始能量基准
             double e0 = MetricsCalculator.totalEnergy(config, state);
@@ -471,22 +563,34 @@ public class ExperimentService implements AutoCloseable {
             e.setMetrics(initEm);
 
             // 发射初始快照与指标
-            broadcastSnapshot(e, state);
+            publishAuthoritativeState(e, state);
             broadcastMetrics(e, state, initEm);
             repository.save(e);
         }
 
-        lastMetricsWallTime = System.nanoTime();
-        long lastSnapshotStep = state.step();
+        long now = monotonicClock.nanoTime();
+        lastMetricsWallTime = now;
+        long nextSnapshotDeadline = now + SNAPSHOT_PERIOD_NANOS;
+        long nextTrajectoryDeadline = now + TRAJECTORY_PERIOD_NANOS;
+        long nextMetricsDeadline = now + METRICS_PERIOD_NANOS;
         long lastTrajectoryStep = state.step();
         long lastMetricsStep = state.step();
-        long stepCount = 0;
+        long stepsSinceSnapshot = 0L;
+        long snapshotStepBudget = realtimeSnapshotStepBudget(config);
+        activeNearEncounters.clear();
 
         try {
             while (true) {
                 // 检查取消
                 if (cancelToken.get()) {
-                    // 取消已在 submitAction 中处理
+                    // submitAction publishes the cancellation snapshot.  A
+                    // shutdown/cancel race may reach here before it does, so
+                    // only publish when the state has not already been finalised.
+                    if (e.status() != ExperimentStatus.CANCELLED) {
+                        publishAuthoritativeState(e, e.state());
+                    }
+                    flushAndReleaseArchive(e);
+                    repository.save(e);
                     workerBusy.set(false);
                     scheduleNext();
                     return;
@@ -497,6 +601,8 @@ public class ExperimentService implements AutoCloseable {
                     e.setStatus(ExperimentStatus.PAUSED);
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "实验已暂停。"));
                     broadcastStatus(e, ExperimentStatus.PAUSED, ExperimentStatus.RUNNING, "实验已暂停。");
+                    publishAuthoritativeState(e, e.state());
+                    flushArchive(e);
                     repository.save(e);
                     workerBusy.set(false);
                     scheduleNext();
@@ -517,6 +623,8 @@ public class ExperimentService implements AutoCloseable {
                     broadcastError(e, "NUMERICAL_INSTABILITY", ex.getMessage(), state.step(), false);
                     broadcastStatus(e, ExperimentStatus.FAILED, ExperimentStatus.RUNNING,
                             "数值不稳定：" + ex.getMessage());
+                    publishAuthoritativeState(e, state);
+                    flushAndReleaseArchive(e);
                     repository.save(e);
                     workerBusy.set(false);
                     scheduleNext();
@@ -524,45 +632,72 @@ public class ExperimentService implements AutoCloseable {
                 }
 
                 state = result.state();
-                stepCount++;
                 e.setState(state);
+                stepsSinceSnapshot++;
+                offerArchivePoint(e, state, false);
 
-                // 处理近距离事件
+                // 处理近距离事件。核心层每步报告“当前在阈值内”的配对，
+                // 应用层只在进入边沿发布；离开使用 1.25x 阈值迟滞。
+                Set<String> nearPairsThisStep = new HashSet<>();
                 for (NearEncounter ne : result.nearEncounters()) {
-                    SimulationEvent ev = new SimulationEvent(
-                            eventSequences.get(e.id()).incrementAndGet(),
-                            SimulationEventType.NEAR_ENCOUNTER,
-                            state.step(),
-                            state.simulationTimeSeconds(),
-                            Instant.now(),
-                            "天体 " + ne.firstBodyId() + " 与 " + ne.secondBodyId()
-                                    + " 距离低于 " + String.format("%.2e", ne.thresholdMeters()) + " m。",
-                            List.of(ne.firstBodyId(), ne.secondBodyId()),
-                            ne.distanceMeters());
-                    e.addEvent(ev);
-                    broadcastNearEncounter(e, state, ne);
+                    String key = nearPairKey(ne.firstBodyId(), ne.secondBodyId());
+                    nearPairsThisStep.add(key);
+                    if (!activeNearEncounters.containsKey(key)) {
+                        SimulationEvent ev = new SimulationEvent(
+                                nextSequence(e),
+                                SimulationEventType.NEAR_ENCOUNTER,
+                                state.step(),
+                                state.simulationTimeSeconds(),
+                                Instant.now(),
+                                "天体 " + ne.firstBodyId() + " 与 " + ne.secondBodyId()
+                                        + " 距离低于 " + String.format("%.2e", ne.thresholdMeters()) + " m。",
+                                List.of(ne.firstBodyId(), ne.secondBodyId()),
+                                ne.distanceMeters());
+                        e.addEvent(ev);
+                        broadcastNearEncounter(e, state, ne);
+                    }
+                    activeNearEncounters.put(key, ne.thresholdMeters());
+                }
+                Iterator<Map.Entry<String, Double>> nearIterator =
+                        activeNearEncounters.entrySet().iterator();
+                while (nearIterator.hasNext()) {
+                    Map.Entry<String, Double> entry = nearIterator.next();
+                    if (!nearPairsThisStep.contains(entry.getKey())
+                            && pairDistance(state, entry.getKey()) > entry.getValue() * 1.25) {
+                        nearIterator.remove();
+                    }
                 }
 
-                // 快照 SNAPSHOT（~30 Hz）
-                if (stepCount % SNAPSHOT_INTERVAL == 0) {
+                if (!singleStep && stepsSinceSnapshot >= snapshotStepBudget) {
+                    awaitSnapshotDeadline(nextSnapshotDeadline);
+                }
+                if (cancelToken.get() || pauseToken.get() || closing.get()) {
+                    continue;
+                }
+                now = monotonicClock.nanoTime();
+
+                // Wall-clock deadlines: at most one publication per type per
+                // integration iteration.  A late iteration advances the
+                // deadline past 'now' and deliberately skips missed periods.
+                if (now >= nextSnapshotDeadline) {
                     broadcastSnapshot(e, state);
-                    lastSnapshotStep = state.step();
+                    stepsSinceSnapshot = 0L;
+                    nextSnapshotDeadline = advanceDeadline(
+                            nextSnapshotDeadline, now, SNAPSHOT_PERIOD_NANOS);
                 }
 
-                // 轨迹增量 TRAJECTORY（~10 Hz）
-                if (stepCount % TRAJECTORY_INTERVAL == 0) {
-                    // 轨迹归档在此处整合
-                    updateTrajectoryArchive(e, state, traj);
-                    broadcastTrajectory(e, state, lastTrajectoryStep, state.step(), traj.sampleStride());
+                if (now >= nextTrajectoryDeadline) {
+                    broadcastTrajectory(e, state, lastTrajectoryStep, state.step(),
+                            Math.max(1L, state.step() - lastTrajectoryStep));
                     lastTrajectoryStep = state.step();
+                    nextTrajectoryDeadline = advanceDeadline(
+                            nextTrajectoryDeadline, now, TRAJECTORY_PERIOD_NANOS);
                 }
 
-                // 指标 METRICS（~2 Hz）
-                if (stepCount % METRICS_INTERVAL == 0) {
-                    long now = System.nanoTime();
+                if (now >= nextMetricsDeadline) {
                     double elapsed = (now - lastMetricsWallTime) / 1_000_000_000.0;
                     lastMetricsWallTime = now;
-                    double sps = METRICS_INTERVAL / Math.max(elapsed, 0.001);
+                    double sps = (state.step() - lastMetricsStep) / Math.max(elapsed, 0.001);
 
                     double e0 = e.metrics() != null ? e.metrics().initialTotalEnergyJoules()
                             : MetricsCalculator.totalEnergy(config, state);
@@ -604,6 +739,8 @@ public class ExperimentService implements AutoCloseable {
                     e.setMetrics(em);
                     broadcastMetrics(e, state, em);
                     lastMetricsStep = state.step();
+                    nextMetricsDeadline = advanceDeadline(
+                            nextMetricsDeadline, now, METRICS_PERIOD_NANOS);
                 }
 
                 // 检查结束条件
@@ -632,8 +769,15 @@ public class ExperimentService implements AutoCloseable {
 
                     String reasonMsg = e.endReason() == EndReason.MAX_STEPS ? "达到最大步数，实验完成。" : "达到目标模拟时间，实验完成。";
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, reasonMsg));
+                    offerArchivePoint(e, state, true);
+                    if (!flushAndReleaseArchive(e)) {
+                        workerBusy.set(false);
+                        scheduleNext();
+                        return;
+                    }
                     broadcastStatus(e, ExperimentStatus.COMPLETED, ExperimentStatus.RUNNING, reasonMsg);
-                    broadcastSnapshot(e, state);
+                    broadcastMetrics(e, state, e.metrics());
+                    publishAuthoritativeState(e, state);
                     repository.save(e);
                     workerBusy.set(false);
                     scheduleNext();
@@ -645,6 +789,8 @@ public class ExperimentService implements AutoCloseable {
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "单步完成，实验已暂停。"));
                     broadcastStatus(e, ExperimentStatus.PAUSED, ExperimentStatus.RUNNING,
                             "单步完成，实验已暂停。");
+                    publishAuthoritativeState(e, state);
+                    flushArchive(e);
                     repository.save(e);
                     workerBusy.set(false);
                     scheduleNext();
@@ -657,9 +803,12 @@ public class ExperimentService implements AutoCloseable {
             e.setErrorMessage("内部错误：" + ex.getMessage());
             e.setCompletedAt(Instant.now());
             e.addEvent(makeEvent(e, SimulationEventType.ERROR, "内部错误：" + ex.getMessage()));
-            broadcastError(e, "INTERNAL_ERROR", ex.getMessage(), state.step(), false);
+            long errorStep = state != null ? state.step() : e.step();
+            broadcastError(e, "INTERNAL_ERROR", ex.getMessage(), errorStep, false);
             broadcastStatus(e, ExperimentStatus.FAILED, ExperimentStatus.RUNNING,
                     "内部错误：" + ex.getMessage());
+            publishAuthoritativeState(e, state != null ? state : e.state());
+            flushAndReleaseArchive(e);
             repository.save(e);
             workerBusy.set(false);
             scheduleNext();
@@ -668,62 +817,134 @@ public class ExperimentService implements AutoCloseable {
 
     // ============================ 轨迹归档 ============================
 
-    private void updateTrajectoryArchive(Experiment e, SimulationState state, TrajectoryInfo traj) {
-        // 追加轨迹点到文件
-        repository.appendTrajectoryPoint(e.id(), state, traj.pointLimit());
-
-        // 更新归档元数据
-        long newCount = traj.sampleCount() + 1;
-        long stride = traj.sampleStride();
-        long limit = traj.pointLimit();
-
-        if (newCount > limit) {
-            // 达到上限：步长加倍
-            stride = Math.min(stride * 2, 100_000L);
-            newCount = limit / 2;
+    private long initialArchiveStride(SimulationConfig config) {
+        long totalSteps = estimatedTotalSteps(config);
+        if (totalSteps <= 0L) {
+            return 1L;
         }
+        return Math.max(1L, 1L + (totalSteps - 1L) / ARCHIVE_POINT_LIMIT);
+    }
 
-        e.setTrajectoryInfo(new TrajectoryInfo(stride, newCount, limit, traj.liveWindowSize()));
+    private long estimatedTotalSteps(SimulationConfig config) {
+        long maxSteps = config.maxSteps() != null ? Math.max(0L, config.maxSteps()) : Long.MAX_VALUE;
+        if (config.targetSimulationTimeSeconds() != null && config.timeStepSeconds() > 0.0) {
+            double estimate = config.targetSimulationTimeSeconds() / config.timeStepSeconds();
+            long targetSteps = estimate >= Long.MAX_VALUE ? Long.MAX_VALUE
+                    : Math.max(0L, (long) Math.ceil(estimate));
+            return Math.min(maxSteps, targetSteps);
+        }
+        return maxSteps == Long.MAX_VALUE ? 0L : maxSteps;
+    }
+
+    private void offerArchivePoint(Experiment e, SimulationState state, boolean force) {
+        if (state == null) {
+            return;
+        }
+        TrajectoryInfo info = e.trajectoryInfo();
+        long stride = Math.max(1L, info.sampleStride());
+        if (!force && state.step() % stride != 0L) {
+            return;
+        }
+        archiveWriter.offer(e.id(), state, info.pointLimit(), stride, archiveInfo -> {
+            TrajectoryInfo current = e.trajectoryInfo();
+            e.setTrajectoryInfo(new TrajectoryInfo(archiveInfo.sampleStride(), archiveInfo.pointCount(),
+                    current.pointLimit(), current.liveWindowSize()));
+        });
+    }
+
+    private boolean flushArchive(Experiment e) {
+        try {
+            archiveWriter.flush(e.id());
+            return true;
+        } catch (RuntimeException failure) {
+            recordArchiveFailure(e, failure);
+            return false;
+        }
+    }
+
+    private boolean flushAndReleaseArchive(Experiment e) {
+        try {
+            archiveWriter.release(e.id());
+            return true;
+        } catch (RuntimeException failure) {
+            recordArchiveFailure(e, failure);
+            return false;
+        }
+    }
+
+    private void recordArchiveFailure(Experiment e, RuntimeException failure) {
+        String message = "trajectory archive failure: " + failure.getMessage();
+        e.setEndReason(EndReason.ERROR);
+        e.setErrorMessage(message);
+        ExperimentStatus previous = e.status();
+        if (previous != ExperimentStatus.FAILED) {
+            e.setStatus(ExperimentStatus.FAILED);
+            e.addEvent(makeEvent(e, SimulationEventType.ERROR, message));
+            broadcastError(e, "ARCHIVE_WRITE_FAILED", message, e.step(), false);
+            broadcastStatus(e, ExperimentStatus.FAILED, previous, message);
+        }
+        try {
+            repository.save(e);
+        } catch (RuntimeException saveFailure) {
+            System.err.println("[ThreeBodyLab] unable to persist archive failure: "
+                    + saveFailure.getMessage());
+        }
+    }
+
+    private void publishAuthoritativeState(Experiment e, SimulationState state) {
+        if (state != null) {
+            broadcastSnapshot(e, state);
+            broadcastTrajectory(e, state, state.step(), state.step(), 1L);
+        }
+    }
+
+    private static String nearPairKey(String first, String second) {
+        return first.compareTo(second) <= 0 ? first + "\u0000" + second : second + "\u0000" + first;
+    }
+
+    private static double pairDistance(SimulationState state, String key) {
+        String[] ids = key.split("\\u0000", -1);
+        if (ids.length != 2) {
+            return Double.POSITIVE_INFINITY;
+        }
+        BodyState first = state.bodies().stream()
+                .filter(body -> ids[0].equals(body.id())).findFirst().orElse(null);
+        BodyState second = state.bodies().stream()
+                .filter(body -> ids[1].equals(body.id())).findFirst().orElse(null);
+        if (first == null || second == null) {
+            return Double.POSITIVE_INFINITY;
+        }
+        return first.position().subtract(second.position()).length();
     }
 
     // ============================ 广播辅助方法 ============================
 
     private void broadcastStatus(Experiment e, ExperimentStatus status, ExperimentStatus prev,
             String message) {
-        long seq = eventSequences.get(e.id()).incrementAndGet();
-        ExperimentMessage msg = new ExperimentMessage(ExperimentMessageType.STATUS, e.id(),
-                seq, Instant.now(),
+        publish(e, ExperimentMessageType.STATUS,
                 new StatusPayload(status.name(), prev != null ? prev.name() : null,
                         e.step(), e.simulationTimeSeconds(),
                         e.endReason() != null ? e.endReason().name() : null,
                         e.progress().completionRatio(), getQueuePosition(e.id()), message));
-        fire(msg);
     }
 
     private void broadcastSnapshot(Experiment e, SimulationState state) {
-        long seq = eventSequences.get(e.id()).incrementAndGet();
         List<BodyStatePayload> bodies = state.bodies().stream()
                 .map(b -> new BodyStatePayload(b.id(),
                         new Vector3Payload(b.position().x(), b.position().y(), b.position().z()),
                         new Vector3Payload(b.velocity().x(), b.velocity().y(), b.velocity().z())))
                 .toList();
         SnapshotPayload payload = new SnapshotPayload(state.step(), state.simulationTimeSeconds(), bodies);
-        ExperimentMessage msg = new ExperimentMessage(ExperimentMessageType.SNAPSHOT, e.id(),
-                seq, Instant.now(), payload);
-        fire(msg);
+        publish(e, ExperimentMessageType.SNAPSHOT, payload);
     }
 
     private void broadcastTrajectory(Experiment e, SimulationState state, long fromStep, long toStep, long stride) {
-        long seq = eventSequences.get(e.id()).incrementAndGet();
         List<TrajectoryPoint> points = List.of(toTrajectoryPoint(state));
         TrajectoryPayload payload = new TrajectoryPayload(fromStep, toStep, stride, points);
-        ExperimentMessage msg = new ExperimentMessage(ExperimentMessageType.TRAJECTORY, e.id(),
-                seq, Instant.now(), payload);
-        fire(msg);
+        publish(e, ExperimentMessageType.TRAJECTORY, payload);
     }
 
     private void broadcastMetrics(Experiment e, SimulationState state, ExperimentMetrics em) {
-        long seq = eventSequences.get(e.id()).incrementAndGet();
         MetricsPayload payload = new MetricsPayload(
                 state.step(), state.simulationTimeSeconds(),
                 em.kineticEnergyJoules(), em.potentialEnergyJoules(),
@@ -739,38 +960,83 @@ public class ExperimentService implements AutoCloseable {
                 em.allTimeMinimumPairDistanceStep(),
                 em.stepsPerSecond(),
                 em.elapsedWallClockSeconds());
-        ExperimentMessage msg = new ExperimentMessage(ExperimentMessageType.METRICS, e.id(),
-                seq, Instant.now(), payload);
-        fire(msg);
+        publish(e, ExperimentMessageType.METRICS, payload);
     }
 
     private void broadcastNearEncounter(Experiment e, SimulationState state, NearEncounter ne) {
-        long seq = eventSequences.get(e.id()).incrementAndGet();
         NearEncounterPayload payload = new NearEncounterPayload(
                 state.step(), state.simulationTimeSeconds(),
                 List.of(ne.firstBodyId(), ne.secondBodyId()),
                 ne.distanceMeters(), ne.thresholdMeters(),
                 "天体 " + ne.firstBodyId() + " 与 " + ne.secondBodyId()
                         + " 距离低于 " + String.format("%.2e", ne.thresholdMeters()) + " m。");
-        ExperimentMessage msg = new ExperimentMessage(ExperimentMessageType.NEAR_ENCOUNTER, e.id(),
-                seq, Instant.now(), payload);
-        fire(msg);
+        publish(e, ExperimentMessageType.NEAR_ENCOUNTER, payload);
     }
 
     private void broadcastError(Experiment e, String code, String message, long step, boolean recoverable) {
-        long seq = eventSequences.get(e.id()).incrementAndGet();
         ErrorPayload payload = new ErrorPayload(code, message, step, recoverable);
-        ExperimentMessage msg = new ExperimentMessage(ExperimentMessageType.ERROR, e.id(),
-                seq, Instant.now(), payload);
-        fire(msg);
+        publish(e, ExperimentMessageType.ERROR, payload);
     }
 
-    private void fire(ExperimentMessage msg) {
-        for (ExperimentEventListener listener : listeners) {
-            try {
-                listener.onMessage(msg);
-            } catch (Exception ignored) {
-                // 监听器异常不应影响模拟
+    private void publish(Experiment e, ExperimentMessageType type, Object payload) {
+        synchronized (publicationLocks.computeIfAbsent(e.id(), ignored -> new Object())) {
+            long seq = nextSequence(e);
+            eventDispatcher.publish(new ExperimentMessage(type, e.id(), seq, Instant.now(), payload));
+        }
+    }
+
+    /** Allocates the one sequence domain shared by persisted events and WS messages. */
+    private long nextSequence(Experiment e) {
+        Object lock = publicationLocks.computeIfAbsent(e.id(), ignored -> new Object());
+        synchronized (lock) {
+            AtomicLong sequence = eventSequences.computeIfAbsent(e.id(), ignored ->
+                    new AtomicLong(e.lastSequence()));
+            long next = sequence.incrementAndGet();
+            e.setLastSequence(next);
+            return next;
+        }
+    }
+
+    static long advanceDeadline(long deadline, long now, long period) {
+        if (deadline > now) {
+            return deadline;
+        }
+        long missed = (now - deadline) / period + 1L;
+        long increment;
+        try {
+            increment = Math.multiplyExact(missed, period);
+            return Math.addExact(deadline, increment);
+        } catch (ArithmeticException overflow) {
+            return now + period;
+        }
+    }
+
+    long realtimeSnapshotStepBudget(SimulationConfig config) {
+        if (!realtimePacing) {
+            return Long.MAX_VALUE;
+        }
+        long totalSteps = estimatedTotalSteps(config);
+        if (totalSteps <= 1L) {
+            return Long.MAX_VALUE;
+        }
+        return Math.max(1L, 1L + (totalSteps - 1L) / TARGET_VISIBLE_SNAPSHOT_FRAMES);
+    }
+
+    /**
+     * Wait only when computation is ahead of the next display frame.  Polling
+     * in short slices keeps pause, cancel and shutdown responsive; late frames
+     * are never replayed because {@link #advanceDeadline(long, long, long)}
+     * still skips missed periods.
+     */
+    private void awaitSnapshotDeadline(long deadlineNanos) {
+        while (!cancelToken.get() && !pauseToken.get() && !closing.get()) {
+            long remaining = deadlineNanos - monotonicClock.nanoTime();
+            if (remaining <= 0L) {
+                return;
+            }
+            LockSupport.parkNanos(Math.min(remaining, PACER_POLL_NANOS));
+            if (Thread.currentThread().isInterrupted()) {
+                return;
             }
         }
     }
@@ -779,7 +1045,7 @@ public class ExperimentService implements AutoCloseable {
 
     private SimulationEvent makeEvent(Experiment e, SimulationEventType type, String message) {
         return new SimulationEvent(
-                eventSequences.get(e.id()).incrementAndGet(),
+                nextSequence(e),
                 type, e.step(), e.simulationTimeSeconds(), Instant.now(), message, null, null);
     }
 

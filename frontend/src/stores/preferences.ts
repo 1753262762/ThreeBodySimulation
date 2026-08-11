@@ -16,6 +16,7 @@ interface PersistedPreferences {
   showTrails?: boolean
   showLabels?: boolean
   showGrid?: boolean
+  showPerformanceHud?: boolean
 }
 
 function readPersisted(): PersistedPreferences {
@@ -36,6 +37,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
   const showTrails = ref(persisted.showTrails ?? true)
   const showLabels = ref(persisted.showLabels ?? true)
   const showGrid = ref(persisted.showGrid ?? true)
+  const showPerformanceHud = ref(persisted.showPerformanceHud ?? false)
 
   function persist(): void {
     if (typeof localStorage === 'undefined') return
@@ -48,6 +50,7 @@ export const usePreferencesStore = defineStore('preferences', () => {
           showTrails: showTrails.value,
           showLabels: showLabels.value,
           showGrid: showGrid.value,
+          showPerformanceHud: showPerformanceHud.value,
         } satisfies PersistedPreferences),
       )
     } catch {
@@ -80,16 +83,23 @@ export const usePreferencesStore = defineStore('preferences', () => {
     persist()
   }
 
+  function togglePerformanceHud(value?: boolean): void {
+    showPerformanceHud.value = value ?? !showPerformanceHud.value
+    persist()
+  }
+
   return {
     unitSystem,
     projection,
     showTrails,
     showLabels,
     showGrid,
+    showPerformanceHud,
     setUnitSystem,
     setProjection,
     toggleTrails,
     toggleLabels,
     toggleGrid,
+    togglePerformanceHud,
   }
 })

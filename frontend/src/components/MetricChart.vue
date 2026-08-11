@@ -16,6 +16,8 @@ const props = defineProps<{
   subtitle: string
   series: { name: string; unit: string; color: string; data: [number, number][] }[]
   height?: number
+  /** Charts are hidden in the expanded scene and should not consume updates. */
+  paused?: boolean
 }>()
 
 const chartRef = ref<HTMLDivElement | null>(null)
@@ -56,7 +58,7 @@ function buildOption(): echarts.EChartsCoreOption {
       name: s.name,
       type: 'line',
       data: s.data,
-      smooth: true,
+      smooth: false,
       symbol: 'none',
       lineStyle: { color: s.color, width: 1.5 },
       areaStyle: {
@@ -75,26 +77,64 @@ function buildOption(): echarts.EChartsCoreOption {
 }
 
 let ro: ResizeObserver | null = null
+let updateTimer: ReturnType<typeof setTimeout> | null = null
+let lastUpdateAt = 0
+const UPDATE_INTERVAL_MS = 500
+
+function updateChart(): void {
+  updateTimer = null
+  if (!chart || props.paused || (typeof document !== 'undefined' && document.hidden)) return
+  chart.setOption(buildOption(), { replaceMerge: ['series'] })
+  lastUpdateAt = Date.now()
+}
+
+function scheduleUpdate(): void {
+  if (props.paused || (typeof document !== 'undefined' && document.hidden)) return
+  const elapsed = Date.now() - lastUpdateAt
+  if (elapsed >= UPDATE_INTERVAL_MS) {
+    updateChart()
+    return
+  }
+  if (updateTimer !== null) return
+  updateTimer = setTimeout(updateChart, UPDATE_INTERVAL_MS - Math.max(0, elapsed))
+}
+
+function onVisibilityChange(): void {
+  if (typeof document === 'undefined' || !document.hidden) scheduleUpdate()
+}
 
 function mount(): void {
   if (!chartRef.value) return
   chart = echarts.init(chartRef.value, undefined, { renderer: 'canvas' })
   chart.setOption(buildOption())
+  lastUpdateAt = Date.now()
   ro = new ResizeObserver(() => chart?.resize())
   ro.observe(chartRef.value)
 }
 
 watch(
-  () => props.series.map((s) => s.data.length),
-  () => chart?.setOption(buildOption()),
+  () => props.series,
+  scheduleUpdate,
   { deep: true },
 )
 
-onMounted(mount)
+watch(
+  () => props.paused,
+  (paused) => {
+    if (!paused) scheduleUpdate()
+  },
+)
+
+onMounted(() => {
+  mount()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
 onBeforeUnmount(() => {
+  if (updateTimer !== null) clearTimeout(updateTimer)
   chart?.dispose()
   chart = null
   ro?.disconnect()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 </script>
 

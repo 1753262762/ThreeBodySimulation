@@ -10,6 +10,11 @@ test('实验室使用单顶栏并可放大模拟视图', async ({ page }) => {
   await expect(page.getByText('创建实验后显示进度', { exact: true })).toBeVisible()
 
   const canvas = page.locator('.simulation-canvas-wrap')
+  await expect(canvas.locator('.simulation-canvas-background')).toHaveCount(1)
+  await expect(canvas.locator('.simulation-canvas-trail')).toHaveCount(1)
+  await expect(canvas.locator('.simulation-canvas-dynamic')).toHaveCount(1)
+  expect(await canvas.locator('canvas').evaluateAll((layers) => layers.map((layer) => getComputedStyle(layer).zIndex)))
+    .toEqual(['2', '1', '0'])
   const before = await canvas.boundingBox()
   expect(before).not.toBeNull()
 

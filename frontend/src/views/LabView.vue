@@ -251,6 +251,7 @@ onUnmounted(() => {
               <button @click="preferences.toggleTrails()">轨迹 {{ preferences.showTrails ? '开' : '关' }}</button>
               <button @click="preferences.toggleLabels()">标签 {{ preferences.showLabels ? '开' : '关' }}</button>
               <button @click="preferences.toggleGrid()">网格 {{ preferences.showGrid ? '开' : '关' }}</button>
+              <button @click="preferences.togglePerformanceHud()">性能 HUD {{ preferences.showPerformanceHud ? '开' : '关' }}</button>
               <button @click="fitCanvas">适应窗口</button>
               <button
                 class="expand-scene-button"
@@ -264,12 +265,14 @@ onUnmounted(() => {
           <SimulationCanvas
             ref="canvasRef"
             :state="state"
+            :snapshot-buffer="experimentsStore.snapshotBuffer"
             :trails-per-body="trails"
             :trail-version="trailVersion"
             :projection="projection"
             :show-trails="preferences.showTrails"
             :show-labels="preferences.showLabels"
             :show-grid="preferences.showGrid"
+            :show-performance-hud="preferences.showPerformanceHud"
             :body-names="bodyNames"
             :body-colors="bodyColors"
             :nearest-pair-ids="nearestPairIds"
@@ -307,11 +310,11 @@ onUnmounted(() => {
         <KpiCards v-show="!sceneExpanded" :metrics="metrics" :step="step" :simulation-time-seconds="simTime" />
 
         <div v-show="!sceneExpanded" class="chart-row">
-          <MetricChart title="系统能量" subtitle="总能量 (J) vs 步数" :series="energySeries" />
-          <MetricChart title="天体间距" subtitle="最近两体距离 (m)" :series="distanceSeries" />
+          <MetricChart title="系统能量" subtitle="总能量 (J) vs 步数" :series="energySeries" :paused="sceneExpanded" />
+          <MetricChart title="天体间距" subtitle="最近两体距离 (m)" :series="distanceSeries" :paused="sceneExpanded" />
         </div>
         <div v-show="!sceneExpanded" class="chart-row">
-          <MetricChart title="角动量" subtitle="大小 (kg·m²/s)" :series="angularSeries" />
+          <MetricChart title="角动量" subtitle="大小 (kg·m²/s)" :series="angularSeries" :paused="sceneExpanded" />
           <article class="chart-card">
             <header><b>实验控制</b><span>动作状态</span></header>
             <div class="chart-body" style="padding: 12px; display: grid; gap: 8px; align-content: start;">

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentAction;
 import com.threebody.app.domain.ExperimentStatus;
+import com.threebody.app.domain.TrajectoryInfo;
 import com.threebody.app.event.ExperimentEventListener;
 import com.threebody.app.event.ExperimentMessage;
 import com.threebody.app.event.ExperimentMessageType;
@@ -50,7 +51,8 @@ class ExperimentServiceTest {
     @BeforeEach
     void setUp() {
         repo = new FileExperimentRepository(tempDir);
-        service = new ExperimentService(repo);
+        // Unit tests exercise state transitions rather than wall-clock playback.
+        service = new ExperimentService(repo, (MonotonicClock) System::nanoTime);
         capturedMessages = new CopyOnWriteArrayList<>();
 
         service.addEventListener(new ExperimentEventListener() {
@@ -126,6 +128,12 @@ class ExperimentServiceTest {
         Experiment cancelled = service.getExperiment(e.id());
         assertEquals(ExperimentStatus.CANCELLED, cancelled.status());
 
+        assertTrue(waitUntil("CANCEL 广播", 2_000,
+                () -> capturedMessages.stream().anyMatch(m -> m.type() == ExperimentMessageType.STATUS
+                        && m.payload() instanceof ExperimentService.StatusPayload sp
+                        && "CANCELLED".equals(sp.status())
+                        && e.id().equals(m.experimentId()))));
+
         ExperimentMessage cancelMsg = capturedMessages.stream()
                 .filter(m -> m.type() == ExperimentMessageType.STATUS
                         && m.payload() instanceof ExperimentService.StatusPayload sp
@@ -159,6 +167,11 @@ class ExperimentServiceTest {
         capturedMessages.clear();
         service.submitAction(e.id(), ExperimentAction.CANCEL, null);
 
+        assertTrue(waitUntil("CANCEL 广播", 2_000,
+                () -> capturedMessages.stream().anyMatch(m -> m.type() == ExperimentMessageType.STATUS
+                        && ((ExperimentService.StatusPayload) m.payload()).status().equals("CANCELLED")
+                        && e.id().equals(m.experimentId()))));
+
         ExperimentMessage cancelMsg = capturedMessages.stream()
                 .filter(m -> {
                     if (m.type() != ExperimentMessageType.STATUS) return false;
@@ -187,6 +200,11 @@ class ExperimentServiceTest {
 
         capturedMessages.clear();
         service.submitAction(e.id(), ExperimentAction.CANCEL, null);
+
+        assertTrue(waitUntil("CANCEL 广播", 2_000,
+                () -> capturedMessages.stream().anyMatch(m -> m.type() == ExperimentMessageType.STATUS
+                        && ((ExperimentService.StatusPayload) m.payload()).status().equals("CANCELLED")
+                        && e.id().equals(m.experimentId()))));
 
         ExperimentMessage cancelMsg = capturedMessages.stream()
                 .filter(m -> {
@@ -299,12 +317,14 @@ class ExperimentServiceTest {
         Experiment e = service.createExperiment("新实验", longConfig());
         assertNotNull(e.id());
         assertEquals("新实验", e.name());
-        assertEquals(ExperimentStatus.QUEUED, e.status());
+        assertTrue(waitUntil("实验自动调度", 5_000,
+                () -> service.getExperiment(e.id()).status() == ExperimentStatus.RUNNING));
 
         // 验证广播中有 STATUS 类型消息
+        assertTrue(waitUntil("创建状态广播", 2_000,
+                () -> capturedMessages.stream().anyMatch(m -> m.type() == ExperimentMessageType.STATUS)));
         List<ExperimentMessage> statusMsgs = capturedMessages.stream()
-                .filter(m -> m.type() == ExperimentMessageType.STATUS)
-                .toList();
+                .filter(m -> m.type() == ExperimentMessageType.STATUS).toList();
         assertFalse(statusMsgs.isEmpty(), "创建时应广播状态消息");
     }
 
@@ -357,12 +377,16 @@ class ExperimentServiceTest {
         Experiment persisted = new Experiment("restored", "恢复测试", longConfig());
         persisted.setStatus(ExperimentStatus.RUNNING);
         persisted.setState(NBodyIntegrator.initialState(persisted.config()));
+        persisted.setTrajectoryInfo(new TrajectoryInfo(3L, 42L, 50_000L, 2_000));
         repo.save(persisted);
 
         service.initialize();
         Experiment restored = service.getExperiment("restored");
         assertNotNull(restored);
         assertEquals(ExperimentStatus.PAUSED, restored.status());
+        assertEquals(8_000, restored.trajectoryInfo().liveWindowSize());
+        assertEquals(3L, restored.trajectoryInfo().sampleStride());
+        assertEquals(42L, restored.trajectoryInfo().sampleCount());
         Thread.sleep(250);
         assertEquals(ExperimentStatus.PAUSED, restored.status());
         assertEquals(0L, restored.step());
@@ -453,13 +477,13 @@ class ExperimentServiceTest {
 
     @Test
     @DisplayName("removeEventListener 后不再接收消息")
-    void removeEventListenerWorks() {
+    void removeEventListenerWorks() throws InterruptedException {
         List<ExperimentMessage> sideCapture = new ArrayList<>();
         ExperimentEventListener sideListener = sideCapture::add;
 
         service.addEventListener(sideListener);
         service.createExperiment("监听测试", longConfig());
-        assertFalse(sideCapture.isEmpty(), "监听器应收到消息");
+        assertTrue(waitUntil("监听器消息", 2_000, () -> !sideCapture.isEmpty()), "监听器应收到消息");
 
         sideCapture.clear();
         service.removeEventListener(sideListener);

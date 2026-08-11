@@ -7,7 +7,7 @@
  * - 轨迹按天体保留最近 LIVE_TRAIL_LIMIT 个三维点，切换投影时复用同一份数据。
  */
 import { defineStore } from 'pinia'
-import { computed, ref, shallowRef } from 'vue'
+import { computed, markRaw, ref, shallowRef } from 'vue'
 import {
   LIVE_TRAIL_LIMIT,
   isActionAllowed,
@@ -30,6 +30,8 @@ import {
   type StatusPayload,
   type TrajectoryPayload,
 } from '../lib/experimentSocket'
+import { SnapshotBuffer } from '../lib/snapshotBuffer'
+import { TrajectoryBuffer } from '../lib/trajectoryBuffer'
 
 /** 图表使用的时间序列点，单位与契约一致（SI）。 */
 export interface MetricSample {
@@ -64,8 +66,11 @@ export const useExperimentsStore = defineStore('experiments', () => {
   const actionPending = ref<ExperimentAction | null>(null)
   const actionError = ref<string | null>(null)
 
-  /** 轨迹缓冲不需要深响应，使用 shallowRef 手动触发更新。 */
-  const trails = shallowRef<Map<string, number[]>>(new Map())
+  /** Display interpolation is kept separate from authoritative liveState. */
+  const snapshotBuffer = markRaw(new SnapshotBuffer())
+
+  /** Ring-backed trail data; only TRAJECTORY messages append to this buffer. */
+  const trails = shallowRef<TrajectoryBuffer>(markRaw(new TrajectoryBuffer(LIVE_TRAIL_LIMIT)))
   const trailVersion = ref(0)
 
   let socket: ExperimentSocket | null = null
@@ -91,7 +96,8 @@ export const useExperimentsStore = defineStore('experiments', () => {
     liveMetrics.value = null
     metricSamples.value = []
     encounterAlerts.value = []
-    trails.value = new Map()
+    trails.value = markRaw(new TrajectoryBuffer(LIVE_TRAIL_LIMIT))
+    snapshotBuffer.reset()
     trailVersion.value += 1
   }
 
@@ -121,6 +127,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
       }
       if (experiment.state) {
         liveState.value = experiment.state
+        snapshotBuffer.push(experiment.state)
       }
       if (experiment.metrics) {
         liveMetrics.value = experiment.metrics
@@ -153,17 +160,8 @@ export const useExperimentsStore = defineStore('experiments', () => {
     metricSamples.value = [...metricSamples.value, sample].slice(-MAX_METRIC_SAMPLES)
   }
 
-  function pushTrailPoint(bodyId: string, x: number, y: number, z: number): void {
-    let points = trails.value.get(bodyId)
-    if (!points) {
-      points = []
-      trails.value.set(bodyId, points)
-    }
-    points.push(x, y, z)
-    const limit = LIVE_TRAIL_LIMIT * 3
-    if (points.length > limit) {
-      points.splice(0, points.length - limit)
-    }
+  function pushTrailPoint(bodyId: string, step: number, x: number, y: number, z: number): boolean {
+    return trails.value.getOrCreate(bodyId).append(step, x, y, z)
   }
 
   function connect(id: string): void {
@@ -187,20 +185,25 @@ export const useExperimentsStore = defineStore('experiments', () => {
         },
         onSnapshot: (payload) => {
           if (resyncing) return
-          liveState.value = snapshotToState(payload)
-          for (const body of payload.bodies) {
-            pushTrailPoint(body.id, body.position.x, body.position.y, body.position.z)
-          }
-          trailVersion.value += 1
+          const state = snapshotToState(payload)
+          liveState.value = state
+          snapshotBuffer.push(state)
         },
         onTrajectory: (payload: TrajectoryPayload) => {
           if (resyncing) return
+          let changed = false
           for (const point of payload.points) {
             for (const body of point.bodies) {
-              pushTrailPoint(body.id, body.position.x, body.position.y, body.position.z)
+              changed = pushTrailPoint(
+                body.id,
+                point.step,
+                body.position.x,
+                body.position.y,
+                body.position.z,
+              ) || changed
             }
           }
-          trailVersion.value += 1
+          if (changed) trailVersion.value += 1
         },
         onMetrics: (payload: MetricsPayload) => {
           if (resyncing) return
@@ -371,6 +374,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     actionPending,
     actionError,
     trails,
+    snapshotBuffer,
     trailVersion,
     queued,
     running,

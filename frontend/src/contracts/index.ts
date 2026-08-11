@@ -40,7 +40,7 @@ export type ApiErrorBody = Schemas['ApiError']
 export type ApiErrorCode = ApiErrorBody['code']
 
 /** 实时画布每个天体保留的最近点数，与契约 trajectory.liveWindowSize 一致。 */
-export const LIVE_TRAIL_LIMIT = 2000
+export const LIVE_TRAIL_LIMIT = 8000
 
 /** 归档采样点上限，与契约 trajectory.pointLimit 一致。 */
 export const ARCHIVE_POINT_LIMIT = 50000

@@ -363,7 +363,7 @@ export interface components {
             pointLimit: number;
             /**
              * Format: int32
-             * @description 实时画布每个天体保留的最近点数，固定为 2000
+             * @description 实时画布每个天体保留的最近点数，固定为 8000
              */
             liveWindowSize: number;
         };

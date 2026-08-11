@@ -201,6 +201,9 @@ a { color: inherit; text-decoration: none; }
 .lab-scene-card footer span { font: 10px var(--mono); color: var(--muted); }
 .simulation-canvas-wrap { position: relative; min-height: 0; }
 .simulation-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.simulation-canvas-background { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.simulation-canvas-trail { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.simulation-canvas-dynamic { position: relative; z-index: 2; }
 .canvas-hint { position: absolute; left: 10px; bottom: 8px; font-size: 10px; color: #6d829e; pointer-events: none; }
 .encounter-toast {
   position: absolute; right: 10px; top: 8px; max-width: 260px; padding: 8px 10px;

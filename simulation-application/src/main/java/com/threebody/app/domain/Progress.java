@@ -18,12 +18,16 @@ public record Progress(
         Double targetTime = config.targetSimulationTimeSeconds();
         Double ratio = null;
         Long remaining = null;
-        if (maxSteps != null) {
+        if (maxSteps != null && maxSteps > 0) {
             remaining = Math.max(0L, maxSteps - step);
-            ratio = maxSteps > 0 ? Math.min(1.0, (double) step / maxSteps) : null;
-        } else if (targetTime != null && targetTime > 0) {
-            remaining = (long) Math.ceil(Math.max(0.0, targetTime - simTime) / config.timeStepSeconds());
-            ratio = Math.min(1.0, simTime / targetTime);
+            ratio = Math.min(1.0, (double) step / maxSteps);
+        }
+        if (targetTime != null && targetTime > 0) {
+            long timeRemaining = (long) Math.ceil(
+                    Math.max(0.0, targetTime - simTime) / config.timeStepSeconds());
+            remaining = remaining == null ? timeRemaining : Math.min(remaining, timeRemaining);
+            double timeRatio = Math.min(1.0, simTime / targetTime);
+            ratio = ratio == null ? timeRatio : Math.max(ratio, timeRatio);
         }
         return new Progress(step, simTime, maxSteps, targetTime, ratio, stepsPerSecond, remaining);
     }

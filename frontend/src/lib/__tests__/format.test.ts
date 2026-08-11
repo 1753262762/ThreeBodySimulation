@@ -50,6 +50,7 @@ describe('format 工具', () => {
   it('parseNumberInput 支持科学计数法与千分位', () => {
     expect(parseNumberInput('1.5e11')).toBe(1.5e11)
     expect(parseNumberInput('1,500')).toBe(1500)
+    expect(parseNumberInput(2000000)).toBe(2000000)
     expect(parseNumberInput('')).toBeNull()
     expect(parseNumberInput('abc')).toBeNull()
   })

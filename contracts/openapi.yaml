@@ -383,7 +383,7 @@ components:
       properties:
         key:
           type: string
-          enum: [A, B, C, D]
+          enum: [A, B, C, D, E, F, G]
         name:
           type: string
         description:

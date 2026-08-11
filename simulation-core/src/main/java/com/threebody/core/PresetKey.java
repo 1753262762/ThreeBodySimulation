@@ -5,5 +5,8 @@ public enum PresetKey {
     A,
     B,
     C,
-    D
+    D,
+    E,
+    F,
+    G
 }

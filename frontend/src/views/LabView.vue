@@ -30,6 +30,49 @@ const metricSamples = computed<MetricSample[]>(() => experimentsStore.metricSamp
 const step = computed(() => experimentsStore.liveState?.step ?? experimentsStore.current?.progress.step ?? 0)
 const simTime = computed(() => experimentsStore.liveState?.simulationTimeSeconds ?? experimentsStore.current?.progress.simulationTimeSeconds ?? 0)
 
+const progressState = computed<{ ratio: number; detail: string } | null>(() => {
+  const experiment = activeExperiment.value
+  if (!experiment) return null
+
+  const candidates: Array<{ ratio: number; detail: string }> = []
+  const maxSteps = experiment.config.maxSteps
+  const targetTime = experiment.config.targetSimulationTimeSeconds
+  if (maxSteps !== null && maxSteps !== undefined && maxSteps > 0) {
+    candidates.push({
+      ratio: step.value / maxSteps,
+      detail: `${step.value.toLocaleString()} / ${maxSteps.toLocaleString()} 步`,
+    })
+  }
+  if (targetTime !== null && targetTime !== undefined && targetTime > 0) {
+    candidates.push({
+      ratio: simTime.value / targetTime,
+      detail: `${simTime.value.toLocaleString(undefined, { maximumFractionDigits: 1 })} / ${targetTime.toLocaleString(undefined, { maximumFractionDigits: 1 })} s`,
+    })
+  }
+  if (candidates.length === 0 && experiment.progress.completionRatio !== null
+      && experiment.progress.completionRatio !== undefined) {
+    candidates.push({
+      ratio: experiment.progress.completionRatio,
+      detail: `步骤 ${step.value.toLocaleString()}`,
+    })
+  }
+  if (candidates.length === 0) return null
+
+  const closest = candidates.reduce((best, candidate) => candidate.ratio > best.ratio ? candidate : best)
+  return {
+    ratio: Math.max(0, Math.min(1, closest.ratio)),
+    detail: closest.detail,
+  }
+})
+
+const progressRatio = computed(() => progressState.value?.ratio ?? null)
+const progressPercent = computed(() => progressRatio.value === null ? null : progressRatio.value * 100)
+const progressLabel = computed(() => {
+  if (progressPercent.value === null) return '进行中'
+  if (progressPercent.value > 0 && progressPercent.value < 0.01) return '<0.01%'
+  return `${progressPercent.value.toFixed(progressPercent.value < 1 ? 2 : 1)}%`
+})
+
 const bodyNames = computed(() => {
   const map = new Map<string, string>()
   const config = experimentsStore.current?.config
@@ -76,6 +119,45 @@ const distanceSeries = computed(() => [{
 }])
 
 const activeTab = ref<'parameters' | 'queue'>('parameters')
+const sceneExpanded = ref(false)
+
+const connectionLabel = computed(() => {
+  switch (experimentsStore.connectionState) {
+    case 'OPEN':
+      return '实时连接'
+    case 'CONNECTING':
+      return '正在连接'
+    case 'RECONNECTING':
+      return '正在重连'
+    case 'CLOSED':
+      return '实时连接已断开'
+    default:
+      if (experimentsStore.backendReachable === true) return '后端已连接'
+      if (experimentsStore.backendReachable === false) return '后端不可用'
+      return '正在连接后端'
+  }
+})
+
+const connectionClass = computed(() => {
+  switch (experimentsStore.connectionState) {
+    case 'OPEN':
+      return 'is-open'
+    case 'CONNECTING':
+    case 'RECONNECTING':
+      return 'is-pending'
+    default:
+      if (experimentsStore.connectionState === 'IDLE' && experimentsStore.backendReachable === true) {
+        return 'is-open'
+      }
+      if (experimentsStore.backendReachable === null) return 'is-pending'
+      return 'is-down'
+  }
+})
+
+function toggleSceneExpanded(): void {
+  sceneExpanded.value = !sceneExpanded.value
+  requestAnimationFrame(() => fitCanvas())
+}
 
 async function applyAndCreate(): Promise<void> {
   const config = draftStore.localConversion.config
@@ -137,6 +219,9 @@ onUnmounted(() => {
         <small>当前模式</small>
         <b>{{ apiModeLabel }}</b>
       </div>
+      <span class="connection-badge" :class="connectionClass">
+        <span class="connection-dot"></span>{{ connectionLabel }}
+      </span>
       <div class="lab-header-actions">
         <button @click="activeTab = activeTab === 'parameters' ? 'queue' : 'parameters'">
           {{ activeTab === 'parameters' ? '切换到队列' : '切换到参数' }}
@@ -152,7 +237,7 @@ onUnmounted(() => {
         <QueuePanel />
       </aside>
 
-      <section class="lab-main">
+      <section class="lab-main" :class="{ 'is-scene-expanded': sceneExpanded }">
         <article class="lab-scene-card">
           <header>
             <div class="scene-header-left">
@@ -167,6 +252,13 @@ onUnmounted(() => {
               <button @click="preferences.toggleLabels()">标签 {{ preferences.showLabels ? '开' : '关' }}</button>
               <button @click="preferences.toggleGrid()">网格 {{ preferences.showGrid ? '开' : '关' }}</button>
               <button @click="fitCanvas">适应窗口</button>
+              <button
+                class="expand-scene-button"
+                :class="{ active: sceneExpanded }"
+                :aria-pressed="sceneExpanded"
+                :title="sceneExpanded ? '恢复下方天体状态和指标' : '压缩下方天体状态，放大模拟视图'"
+                @click="toggleSceneExpanded"
+              >{{ sceneExpanded ? '还原布局' : '放大视图' }}</button>
             </div>
           </header>
           <SimulationCanvas
@@ -186,10 +278,24 @@ onUnmounted(() => {
             <button :disabled="!experimentsStore.can('PAUSE')" @click="experimentsStore.submitAction('PAUSE')" title="暂停">Ⅱ</button>
             <button class="pause" :disabled="!experimentsStore.can('RESUME')" @click="experimentsStore.submitAction('RESUME')" title="继续">▶</button>
             <button :disabled="!experimentsStore.can('STEP')" @click="experimentsStore.submitAction('STEP')" title="单步">▶│</button>
-            <div class="lab-progress">
-              <i :style="{ width: `${Math.min(100, Math.round((activeExperiment?.progress.completionRatio ?? 0) * 100))}%` }"></i>
-            </div>
-            <span>步骤 {{ step.toLocaleString() }}</span>
+            <template v-if="activeExperiment">
+              <div class="lab-progress-group">
+                <div
+                  class="lab-progress"
+                  role="progressbar"
+                  aria-label="实验进度"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  :aria-valuenow="progressPercent === null ? undefined : Number(progressPercent.toFixed(6))"
+                  :aria-valuetext="`${progressLabel}，${progressState?.detail ?? ''}`"
+                >
+                  <i :style="{ transform: `scaleX(${progressRatio ?? 0})` }"></i>
+                </div>
+                <span class="progress-label">{{ progressLabel }}</span>
+              </div>
+              <span class="progress-detail">{{ progressState?.detail }}</span>
+            </template>
+            <span v-else class="progress-empty">创建实验后显示进度</span>
           </footer>
 
           <div v-for="(alert, index) in experimentsStore.encounterAlerts.slice(-3)" :key="index" class="encounter-toast">
@@ -198,13 +304,13 @@ onUnmounted(() => {
           </div>
         </article>
 
-        <KpiCards :metrics="metrics" :step="step" :simulation-time-seconds="simTime" />
+        <KpiCards v-show="!sceneExpanded" :metrics="metrics" :step="step" :simulation-time-seconds="simTime" />
 
-        <div class="chart-row">
+        <div v-show="!sceneExpanded" class="chart-row">
           <MetricChart title="系统能量" subtitle="总能量 (J) vs 步数" :series="energySeries" />
           <MetricChart title="天体间距" subtitle="最近两体距离 (m)" :series="distanceSeries" />
         </div>
-        <div class="chart-row">
+        <div v-show="!sceneExpanded" class="chart-row">
           <MetricChart title="角动量" subtitle="大小 (kg·m²/s)" :series="angularSeries" />
           <article class="chart-card">
             <header><b>实验控制</b><span>动作状态</span></header>

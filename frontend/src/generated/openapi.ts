@@ -237,7 +237,7 @@ export interface components {
         };
         Preset: {
             /** @enum {string} */
-            key: "A" | "B" | "C" | "D";
+            key: "A" | "B" | "C" | "D" | "E" | "F" | "G";
             name: string;
             description: string;
             config: components["schemas"]["SimulationConfig"];

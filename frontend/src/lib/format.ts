@@ -101,8 +101,8 @@ export function formatDateTime(iso: string | null | undefined): string {
 }
 
 /** 解析用户输入，接受 1.5e11、1,500 等写法；非法输入返回 null 由校验层处理。 */
-export function parseNumberInput(raw: string): number | null {
-  const trimmed = raw.trim().replace(/,/g, '')
+export function parseNumberInput(raw: string | number): number | null {
+  const trimmed = String(raw).trim().replace(/,/g, '')
   if (trimmed === '') return null
   const parsed = Number(trimmed)
   return Number.isFinite(parsed) ? parsed : null

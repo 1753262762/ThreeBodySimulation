@@ -165,7 +165,7 @@ function doExport(): void {
       <template v-if="draft.endCondition === 'MAX_STEPS' || draft.endCondition === 'BOTH'">
         <div class="field" :class="{ 'is-error': fieldError('maxSteps') }">
           <label for="max-steps">最大步数</label>
-          <input id="max-steps" v-model="draft.maxSteps" type="number" min="1" />
+          <input id="max-steps" v-model="draft.maxSteps" type="text" inputmode="numeric" />
           <small v-if="fieldError('maxSteps')" class="field-error">{{ fieldError('maxSteps') }}</small>
         </div>
       </template>

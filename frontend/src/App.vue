@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import AppHeader from './components/AppHeader.vue'
 import { useDraftStore } from './stores/draft'
 import { useExperimentsStore } from './stores/experiments'
 
@@ -15,7 +14,6 @@ onMounted(() => {
 
 <template>
   <div class="app-shell">
-    <AppHeader />
     <RouterView />
   </div>
 </template>

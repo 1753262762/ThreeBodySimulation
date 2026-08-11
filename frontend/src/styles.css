@@ -26,31 +26,9 @@ a { color: inherit; text-decoration: none; }
 
 .app-shell { min-height: 100%; display: flex; flex-direction: column; }
 
-/* ============ 顶栏 ============ */
-.app-header {
-  height: 58px;
-  padding: 0 20px;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  background: linear-gradient(180deg, #13233b, #0f1a2b);
-  border-bottom: 1px solid var(--line);
-}
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand-mark {
-  width: 30px; height: 30px; display: grid; place-items: center;
-  border-radius: 8px; background: #173b36; color: #77e1bc; font: 20px Georgia, serif;
-}
-.brand-copy { display: grid; line-height: 1.25; }
-.brand-copy strong { font-size: 13px; }
-.brand-copy small { font: 7px var(--mono); color: var(--muted); letter-spacing: .12em; }
-.app-nav { display: flex; gap: 4px; }
-.app-nav a {
-  padding: 7px 10px; border-radius: 6px; font-size: 12px; color: var(--muted);
-}
-.app-nav a.router-link-active { color: var(--accent-strong); background: rgba(53, 201, 164, .08); }
+/* ============ 连接状态 ============ */
 .connection-badge {
-  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  display: inline-flex; align-items: center; gap: 6px;
   font-size: 11px; color: var(--muted);
 }
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
@@ -59,7 +37,7 @@ a { color: inherit; text-decoration: none; }
 .connection-badge.is-down .connection-dot { background: var(--danger); }
 
 /* ============ 参数实验室布局 ============ */
-.lab-page { background: var(--bg); color: var(--text); min-height: calc(100vh - 58px); }
+.lab-page { background: var(--bg); color: var(--text); min-height: 100vh; }
 .lab-header {
   height: 58px; padding: 0 20px; display: flex; align-items: center; gap: 14px;
   background: var(--panel); border-bottom: 1px solid var(--line);
@@ -82,7 +60,7 @@ a { color: inherit; text-decoration: none; }
 .lab-header-actions .run { background: var(--accent); border-color: var(--accent); color: #03231b; font-weight: 700; }
 
 .lab-layout {
-  height: calc(100vh - 116px);
+  height: calc(100vh - 58px);
   min-height: 640px;
   display: grid;
   grid-template-columns: 340px minmax(0, 1fr);
@@ -92,6 +70,7 @@ a { color: inherit; text-decoration: none; }
   padding: 16px; overflow-y: auto;
 }
 .lab-main { padding: 14px; overflow: hidden; display: grid; grid-template-rows: minmax(0, 1fr) auto auto auto; gap: 12px; }
+.lab-main.is-scene-expanded { grid-template-rows: minmax(0, 1fr); }
 
 .lab-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .lab-title span { font-weight: 700; font-size: 13px; }
@@ -196,6 +175,7 @@ a { color: inherit; text-decoration: none; }
   border-radius: 5px; padding: 5px 9px; font-size: 10px;
 }
 .lab-scene-card header button.active { color: var(--accent-strong); border-color: var(--accent-strong); }
+.lab-scene-card header .expand-scene-button { min-width: 62px; }
 .lab-scene-card > footer {
   padding: 0 12px; display: flex; align-items: center; gap: 7px; border-top: 1px solid var(--line);
 }
@@ -205,8 +185,19 @@ a { color: inherit; text-decoration: none; }
 }
 .lab-scene-card > footer .pause { color: #04271f; background: var(--accent); border-color: var(--accent); }
 .lab-scene-card > footer button:disabled { opacity: .4; }
-.lab-progress { height: 3px; flex: 1; background: #1b2a40; margin-left: 8px; border-radius: 2px; overflow: hidden; }
-.lab-progress i { display: block; height: 100%; background: var(--accent); }
+.lab-progress-group { flex: 1; min-width: 100px; margin-left: 8px; display: flex; align-items: center; gap: 8px; }
+.lab-progress {
+  height: 7px; flex: 1; background: #1b2a40;
+  border: 1px solid #293b55; border-radius: 5px; overflow: hidden;
+}
+.lab-progress i {
+  display: block; width: 100%; height: 100%; border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+  transform-origin: left center; transition: transform .2s ease-out;
+}
+.lab-scene-card footer .progress-label { min-width: 48px; text-align: right; color: var(--accent-strong); }
+.lab-scene-card footer .progress-detail { min-width: 118px; text-align: right; }
+.lab-scene-card footer .progress-empty { flex: 1; text-align: center; color: #6d829e; }
 .lab-scene-card footer span { font: 10px var(--mono); color: var(--muted); }
 .simulation-canvas-wrap { position: relative; min-height: 0; }
 .simulation-canvas { display: block; width: 100%; height: 100%; touch-action: none; }

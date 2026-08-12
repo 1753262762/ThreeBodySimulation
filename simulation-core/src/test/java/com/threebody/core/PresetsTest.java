@@ -8,10 +8,10 @@ import org.junit.jupiter.api.Test;
 class PresetsTest {
 
     @Test
-    void scenicPresetsAreValidAndRemainFinite() {
-        assertEquals(7, Presets.all().size());
+    void allPresetsAreValidAndRemainFinite() {
+        assertEquals(3, Presets.all().size());
 
-        for (PresetKey key : new PresetKey[] { PresetKey.E, PresetKey.F, PresetKey.G }) {
+        for (PresetKey key : PresetKey.values()) {
             SimulationConfig config = Presets.byKey(key).config();
             assertTrue(ConfigValidator.validate(config).valid(), () -> key + " 配置应通过校验");
 

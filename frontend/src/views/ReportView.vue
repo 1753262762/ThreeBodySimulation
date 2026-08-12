@@ -5,6 +5,7 @@ import { api } from '../lib/apiClient'
 import type { ReportData } from '../contracts'
 import { formatBytes, formatDateTime, formatInteger, formatScientific, formatSimulationTime, formatWallClock } from '../lib/format'
 import { EXPERIMENT_STATUS_LABELS, END_REASON_LABELS } from '../contracts'
+import ThemeSelector from '../components/ThemeSelector.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -79,6 +80,7 @@ onMounted(() => {
       <button @click="router.back()">← 返回</button>
       <h1>实验报告 · {{ exp?.name ?? experimentId() }}</h1>
       <div class="report-actions">
+        <ThemeSelector />
         <button @click="downloadConfig">配置 JSON</button>
         <button @click="downloadCsv">轨迹 CSV</button>
         <button @click="downloadJson">报告数据</button>

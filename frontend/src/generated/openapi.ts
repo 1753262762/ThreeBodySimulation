@@ -16,7 +16,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 获取内置 A-D 预设配置 */
+        /** 获取内置 A-C 预设配置 */
         get: operations["listPresets"];
         put?: never;
         post?: never;
@@ -191,6 +191,77 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/experiments/{id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ExperimentId"];
+            };
+            cookie?: never;
+        };
+        /**
+         * 查询已归档轨迹范围
+         * @description 返回闭区间 [fromStep, toStep] 内已持久化的归档点，按 step 升序。
+         *     超过 maxPoints 时均匀抽样并保留首尾点。运行中不强制 flush，currentState 独立返回，
+         *     归档点可能落后于权威状态（最终一致性）。参数非法或 toStep 超过当前权威步返回 400。
+         */
+        get: operations["getExperimentHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/experiments/{id}/replay-jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ExperimentId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 创建精确回放任务
+         * @description targetStep 必须在 [0, currentStep] 内。目标等于当前权威状态或精确归档点立即返回
+         *     200/COMPLETED；需要重算时返回 202/QUEUED。待处理任务达到 8 个时返回 429。
+         */
+        post: operations["createReplayJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/experiments/{id}/replay-jobs/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ExperimentId"];
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        /** 查询回放任务进度与结果 */
+        get: operations["getReplayJob"];
+        put?: never;
+        post?: never;
+        /**
+         * 删除回放任务
+         * @description 运行中任务进入 CANCELLED，已终态任务保持原终态。
+         */
+        delete: operations["deleteReplayJob"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -237,7 +308,7 @@ export interface components {
         };
         Preset: {
             /** @enum {string} */
-            key: "A" | "B" | "C" | "D" | "E" | "F" | "G";
+            key: "A" | "B" | "C";
             name: string;
             description: string;
             config: components["schemas"]["SimulationConfig"];
@@ -246,10 +317,15 @@ export interface components {
             /** @description JSON 指针风格路径，例如 bodies[2].massKg */
             field: string;
             /** @enum {string} */
-            code: "BODY_COUNT_OUT_OF_RANGE" | "DUPLICATE_BODY_ID" | "MISSING_BODY_NAME" | "INVALID_COLOR" | "INVALID_MASS" | "NON_FINITE_VALUE" | "COINCIDENT_BODIES" | "INVALID_TIME_STEP" | "INVALID_GRAVITATIONAL_CONSTANT" | "INVALID_SOFTENING_LENGTH" | "MISSING_END_CONDITION" | "MAX_STEPS_OUT_OF_RANGE" | "TARGET_TIME_OUT_OF_RANGE";
+            code: "BODY_COUNT_OUT_OF_RANGE" | "DUPLICATE_BODY_ID" | "MISSING_BODY_NAME" | "INVALID_COLOR" | "INVALID_MASS" | "NON_FINITE_VALUE" | "COINCIDENT_BODIES" | "INVALID_TIME_STEP" | "INVALID_GRAVITATIONAL_CONSTANT" | "INVALID_SOFTENING_LENGTH" | "MISSING_END_CONDITION" | "MAX_STEPS_OUT_OF_RANGE" | "TARGET_TIME_OUT_OF_RANGE" | "TIME_STEP_TOO_LARGE" | "INITIAL_DISTANCE_TOO_SMALL" | "INITIAL_SPEED_HIGH" | "SOFTENING_TOO_SMALL" | "SOFTENING_TOO_LARGE";
             message: string;
             /** @enum {string} */
             severity: "ERROR" | "WARNING";
+            /**
+             * @description 仅 WARNING 填写；ERROR 为 null
+             * @enum {string|null}
+             */
+            riskLevel?: "CAUTION" | "HIGH" | null;
         };
         ValidationResult: {
             /** @description 不存在 ERROR 级问题时为 true */
@@ -332,12 +408,69 @@ export interface components {
             /** Format: double */
             elapsedWallClockSeconds?: number | null;
         };
-        SimulationEvent: {
+        /**
+         * @description 近遇生命周期阶段；诊断事件固定为 FINAL
+         * @enum {string}
+         */
+        EventPhase: "ENTER" | "UPDATE" | "FINAL";
+        /** @enum {string} */
+        DiagnosticSeverity: "NOTICE" | "WARNING" | "CRITICAL";
+        /** @enum {string} */
+        DiagnosticCauseCategory: "PHYSICAL_PHENOMENON" | "PARAMETER_RISK" | "NUMERICAL_ERROR" | "MIXED";
+        /** @description 诊断证据，字段均可空，只填写本次诊断相关的证据项。 */
+        DiagnosticEvidence: {
+            /** Format: double */
+            timeStepSeconds?: number | null;
+            /** Format: double */
+            softeningLengthMeters?: number | null;
+            /** Format: double */
+            normalizedEnergyError?: number | null;
+            /** Format: double */
+            relativeEnergyDrift?: number | null;
+            /** Format: double */
+            minimumPairDistanceMeters?: number | null;
+            /** Format: double */
+            speedRatioToEscape?: number | null;
+            /** Format: double */
+            directionChangeDegrees?: number | null;
+            /** Format: double */
+            rmsRadiusRatio?: number | null;
+            /** Format: double */
+            outwardBodyFraction?: number | null;
             /** Format: int64 */
-            sequence: number;
+            lastStableStep?: number | null;
+            bodyIds?: string[] | null;
+        };
+        Diagnostic: {
             /** @enum {string} */
-            type: "NEAR_ENCOUNTER" | "STATUS_CHANGE" | "NUMERICAL_WARNING" | "ERROR";
-            /** Format: int64 */
+            code: "ENERGY_DRIFT" | "POSSIBLE_ESCAPE" | "SUDDEN_DEFLECTION" | "RAPID_DISASSEMBLY" | "NUMERICAL_INSTABILITY";
+            severity: components["schemas"]["DiagnosticSeverity"];
+            causeCategory: components["schemas"]["DiagnosticCauseCategory"];
+            summary: string;
+            likelyCauses: string[];
+            evidence: components["schemas"]["DiagnosticEvidence"];
+            recommendations: string[];
+        };
+        /**
+         * @description 逻辑事件。sequence 是逻辑事件创建顺序，创建后不变；同一 eventId 的 UPDATE/FINAL 不重新分配该字段。
+         *     eventId 是稳定事件标识，新事件必填；旧 1.0 事件可为空，前端以 sequence 作为只读兼容键。
+         *     NUMERICAL_WARNING 为读取兼容保留枚举值，生产端不再新发，由 DIAGNOSTIC 取代。
+         */
+        SimulationEvent: {
+            /**
+             * Format: int64
+             * @description 逻辑事件创建顺序，创建后不变
+             */
+            sequence: number;
+            /** Format: uuid */
+            eventId?: string | null;
+            /** @enum {string} */
+            type: "NEAR_ENCOUNTER" | "STATUS_CHANGE" | "DIAGNOSTIC" | "NUMERICAL_WARNING" | "ERROR";
+            phase?: components["schemas"]["EventPhase"];
+            /**
+             * Format: int64
+             * @description 当前修订对应的步
+             */
             step: number;
             /** Format: double */
             simulationTimeSeconds: number;
@@ -345,8 +478,23 @@ export interface components {
             timestamp: string;
             message: string;
             bodyIds?: string[] | null;
-            /** Format: double */
+            /**
+             * Format: double
+             * @description 兼容字段，优先等于 closestDistanceMeters
+             */
             distanceMeters?: number | null;
+            /** Format: double */
+            thresholdMeters?: number | null;
+            /** Format: double */
+            triggerDistanceMeters?: number | null;
+            /** Format: double */
+            closestDistanceMeters?: number | null;
+            /** Format: int64 */
+            closestStep?: number | null;
+            /** Format: double */
+            closestSimulationTimeSeconds?: number | null;
+            midpointPosition?: components["schemas"]["Vector3"];
+            diagnostic?: components["schemas"]["Diagnostic"];
         };
         TrajectoryInfo: {
             /**
@@ -443,9 +591,69 @@ export interface components {
             /** Format: date-time */
             generatedAt: string;
         };
+        HistoryResponse: {
+            /** @description 落在闭区间 [fromStep, toStep] 内的已持久化归档点，按 step 升序 */
+            points: components["schemas"]["SimulationState"][];
+            /** Format: int64 */
+            availableFromStep?: number | null;
+            /** Format: int64 */
+            availableToStep?: number | null;
+            /**
+             * Format: int64
+             * @description 归档当前采样步长，不保证相邻点严格等距
+             */
+            archiveSampleStride: number;
+            /** @description 超过 maxPoints 时均匀抽样并保留区间首尾，此时为 true */
+            downsampled: boolean;
+            /** @description 当前权威状态，运行中可能领先于归档点（最终一致） */
+            currentState?: components["schemas"]["SimulationState"];
+        };
+        /** @enum {string} */
+        ReplayJobStatus: "QUEUED" | "RUNNING" | "COMPLETED" | "CANCELLED" | "FAILED";
+        /** @enum {string|null} */
+        ReplaySource: "CURRENT_STATE" | "ARCHIVE_EXACT" | "RECOMPUTED" | null;
+        ReplayJobCreateRequest: {
+            /**
+             * Format: int64
+             * @description 目标步，必须在 [0, currentStep] 内
+             */
+            targetStep: number;
+        };
+        ReplayJob: {
+            /** Format: uuid */
+            jobId: string;
+            /** Format: uuid */
+            experimentId: string;
+            /** Format: int64 */
+            targetStep: number;
+            status: components["schemas"]["ReplayJobStatus"];
+            source?: components["schemas"]["ReplaySource"];
+            /**
+             * Format: int64
+             * @description 重算起点；RECOMPUTED 时使用 floor 归档步或 0
+             */
+            baseStep?: number | null;
+            /** Format: int64 */
+            completedSteps?: number;
+            /** Format: int64 */
+            totalSteps?: number;
+            /** Format: double */
+            progress: number;
+            result?: components["schemas"]["SimulationState"];
+            error?: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /**
+             * Format: date-time
+             * @description 完成/取消结果在内存中的保留截止时间
+             */
+            expiresAt: string;
+        };
         ApiError: {
             /** @enum {string} */
-            code: "VALIDATION_FAILED" | "EXPERIMENT_NOT_FOUND" | "ILLEGAL_STATE_TRANSITION" | "EXPERIMENT_NOT_EDITABLE" | "QUEUE_CONFLICT" | "UNSUPPORTED_ACTION_PAYLOAD" | "MALFORMED_REQUEST" | "STORAGE_FAILURE" | "INTERNAL_ERROR";
+            code: "VALIDATION_FAILED" | "EXPERIMENT_NOT_FOUND" | "ILLEGAL_STATE_TRANSITION" | "EXPERIMENT_NOT_EDITABLE" | "QUEUE_CONFLICT" | "UNSUPPORTED_ACTION_PAYLOAD" | "MALFORMED_REQUEST" | "STORAGE_FAILURE" | "REPLAY_QUEUE_FULL" | "REPLAY_JOB_NOT_FOUND" | "INTERNAL_ERROR";
             message: string;
             /** Format: date-time */
             timestamp: string;
@@ -788,6 +996,145 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    getExperimentHistory: {
+        parameters: {
+            query?: {
+                /** @description 起始步，默认 0，必须 >= 0 */
+                fromStep?: number;
+                /** @description 结束步，默认当前可用最大步，必须 >= fromStep */
+                toStep?: number;
+                /** @description 返回点数上限，默认 1000，范围 2～2000 */
+                maxPoints?: number;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["ExperimentId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 历史轨迹范围 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HistoryResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createReplayJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ExperimentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReplayJobCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description 精确命中，任务已完成 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayJob"];
+                };
+            };
+            /** @description 需要重算，任务已入队 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayJob"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            /** @description 待处理回放任务已达上限 */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getReplayJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ExperimentId"];
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 回放任务 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReplayJob"];
+                };
+            };
+            /** @description 任务不存在或已过期 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    deleteReplayJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ExperimentId"];
+                jobId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已删除 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 任务不存在或已过期 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
         };
     };
 }

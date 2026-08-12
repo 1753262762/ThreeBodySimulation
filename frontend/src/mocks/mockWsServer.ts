@@ -1,12 +1,14 @@
 /**
  * Mock WebSocket 服务器。
  *
- * 使用 MSW 的 WebSocket 拦截能力，按契约信封广播消息。
+ * 使用 MSW 的 WebSocket 拦截能力，按 1.1 契约信封广播消息。
  * 返回的 handler 必须传给 setupWorker(...handlers)，否则不会拦截连接。
  */
 import { ws } from 'msw/core/ws'
 import { registerMockClient, unregisterMockClient, startMockScheduler } from './mockScheduler'
 import { getRecord, toExperiment } from './mockRepository'
+
+const SCHEMA_VERSION = '1.1'
 
 export function createMockWsHandler() {
   const link = ws.link('*/ws/v1/experiments/*')
@@ -19,7 +21,7 @@ export function createMockWsHandler() {
     if (!record) {
       client.send(
         JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: SCHEMA_VERSION,
           type: 'ERROR',
           experimentId: id,
           sequence: 1,
@@ -35,7 +37,7 @@ export function createMockWsHandler() {
     const greetingSeq = record.wsSequence
     client.send(
       JSON.stringify({
-        schemaVersion: '1.0',
+        schemaVersion: SCHEMA_VERSION,
         type: 'STATUS',
         experimentId: experiment.id,
         sequence: greetingSeq,
@@ -56,7 +58,7 @@ export function createMockWsHandler() {
       record.wsSequence += 1
       client.send(
         JSON.stringify({
-          schemaVersion: '1.0',
+          schemaVersion: SCHEMA_VERSION,
           type: 'SNAPSHOT',
           experimentId: experiment.id,
           sequence: record.wsSequence,

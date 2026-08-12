@@ -16,6 +16,7 @@ export type Preset = Schemas['Preset']
 export type PresetKey = Preset['key']
 export type ValidationIssue = Schemas['ValidationIssue']
 export type ValidationIssueCode = ValidationIssue['code']
+export type RiskLevel = NonNullable<ValidationIssue['riskLevel']>
 export type ValidationSeverity = ValidationIssue['severity']
 export type ValidationResult = Schemas['ValidationResult']
 export type ExperimentStatus = Schemas['ExperimentStatus']
@@ -27,6 +28,16 @@ export type SimulationState = Schemas['SimulationState']
 export type Metrics = Schemas['Metrics']
 export type SimulationEvent = Schemas['SimulationEvent']
 export type SimulationEventType = SimulationEvent['type']
+export type EventPhase = Schemas['EventPhase']
+export type Diagnostic = Schemas['Diagnostic']
+export type DiagnosticSeverity = Schemas['DiagnosticSeverity']
+export type DiagnosticCauseCategory = Schemas['DiagnosticCauseCategory']
+export type DiagnosticEvidence = Schemas['DiagnosticEvidence']
+export type HistoryResponse = Schemas['HistoryResponse']
+export type ReplayJob = Schemas['ReplayJob']
+export type ReplayJobStatus = Schemas['ReplayJobStatus']
+export type ReplaySource = NonNullable<Schemas['ReplaySource']>
+export type ReplayJobCreateRequest = Schemas['ReplayJobCreateRequest']
 export type TrajectoryInfo = Schemas['TrajectoryInfo']
 export type ExperimentSummary = Schemas['ExperimentSummary']
 export type Experiment = Schemas['Experiment']
@@ -110,5 +121,6 @@ export const EVENT_TYPE_LABELS: Record<SimulationEventType, string> = {
   NEAR_ENCOUNTER: '近距离事件',
   STATUS_CHANGE: '状态变化',
   NUMERICAL_WARNING: '数值告警',
+  DIAGNOSTIC: '运行时诊断',
   ERROR: '错误',
 }

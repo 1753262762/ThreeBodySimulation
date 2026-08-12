@@ -3,6 +3,7 @@
  *
  * 覆盖契约中的全部 REST 端点，并按契约返回错误码与状态码，
  * 使前端可以在没有 Java 服务时验证正常流程与失败分支。
+ * 含 1.1 契约的量纲化风险 Warning、历史范围查询与回放任务接口。
  */
 import { HttpResponse, http } from 'msw'
 import type {
@@ -10,6 +11,8 @@ import type {
   ApiErrorCode,
   ExperimentActionRequest,
   ExperimentCreateRequest,
+  ReplayJobCreateRequest,
+  RiskLevel,
   SimulationConfig,
   ValidationIssue,
   ValidationResult,
@@ -19,17 +22,26 @@ import {
   advance,
   allRecords,
   createRecord,
+  createReplayJob,
   deleteRecord,
+  deleteReplayJob,
+  getHistorySlice,
   getRecord,
+  getReplayJob,
   mockPresets,
   normalizeConfig,
+  pendingReplayJobCount,
   reorder,
+  replayJobResponse,
+  scheduleReplayJobs,
   toExperiment,
   toSummary,
 } from './mockRepository'
 import { startMockScheduler } from './mockScheduler'
 
 const BASE = '/api/v1'
+/** Java Double.MIN_NORMAL，作为 rEff 下限，避免极小间距导致周期/逃逸速度溢出。 */
+const MIN_NORMAL = 2.2250738585072014e-308
 
 function errorResponse(status: number, code: ApiErrorCode, message: string, issues?: ValidationIssue[]) {
   const body: ApiErrorBody = {
@@ -49,7 +61,8 @@ export function validateConfig(config: SimulationConfig): ValidationResult {
     code: ValidationIssue['code'],
     message: string,
     severity: ValidationIssue['severity'] = 'ERROR',
-  ) => issues.push({ field, code, message, severity })
+    riskLevel: RiskLevel | null = null,
+  ) => issues.push({ field, code, message, severity, riskLevel })
 
   if (!Array.isArray(config.bodies) || config.bodies.length < MIN_BODY_COUNT || config.bodies.length > MAX_BODY_COUNT) {
     push('bodies', 'BODY_COUNT_OUT_OF_RANGE', `天体数量必须介于 ${MIN_BODY_COUNT} 与 ${MAX_BODY_COUNT} 之间。`)
@@ -114,32 +127,9 @@ export function validateConfig(config: SimulationConfig): ValidationResult {
     push('targetSimulationTimeSeconds', 'TARGET_TIME_OUT_OF_RANGE', '目标模拟时间必须为正数。')
   }
 
-  // 时间步长相对最近间距过大时给出警告，模拟后端的稳定性提示。
-  if (config.bodies?.length >= 2 && Number.isFinite(config.timeStepSeconds)) {
-    let minDistance = Number.POSITIVE_INFINITY
-    for (let i = 0; i < config.bodies.length; i += 1) {
-      for (let j = i + 1; j < config.bodies.length; j += 1) {
-        const a = config.bodies[i].position
-        const b = config.bodies[j].position
-        if (!a || !b) continue
-        minDistance = Math.min(minDistance, Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z))
-      }
-    }
-    if (Number.isFinite(minDistance) && minDistance > 0 && config.timeStepSeconds > 0) {
-      const maxSpeed = Math.max(
-        ...config.bodies.map((body) =>
-          Math.hypot(body.velocity?.x ?? 0, body.velocity?.y ?? 0, body.velocity?.z ?? 0),
-        ),
-      )
-      if (maxSpeed > 0 && maxSpeed * config.timeStepSeconds > minDistance * 0.1) {
-        push(
-          'timeStepSeconds',
-          'INVALID_TIME_STEP',
-          '时间步长相对最近天体间距偏大，长期积分可能出现明显能量漂移。',
-          'WARNING',
-        )
-      }
-    }
+  // 量纲化风险规则（§5.2）只在强制校验所需值均有效后执行。
+  if (!issues.some((item) => item.severity === 'ERROR')) {
+    addRiskWarnings(config, push)
   }
 
   const valid = !issues.some((item) => item.severity === 'ERROR')
@@ -156,6 +146,145 @@ export function validateConfig(config: SimulationConfig): ValidationResult {
   }
 }
 
+interface RiskPair {
+  i: number
+  j: number
+  r: number
+  rEff: number
+  period: number
+  moveRate: number
+  speedRate: number
+}
+
+/**
+ * 量纲化风险规则（§5.2）：对每对天体计算 rEff/μ/vRel/period/moveRate/vEscape/speedRate，
+ * 每种风险码只返回最严重的一条 Warning，消息带最危险天体名称与计算比值。
+ */
+function addRiskWarnings(
+  config: SimulationConfig,
+  push: (
+    field: string,
+    code: ValidationIssue['code'],
+    message: string,
+    severity: ValidationIssue['severity'],
+    riskLevel: RiskLevel,
+  ) => void,
+): void {
+  const bodies = config.bodies
+  if (!Array.isArray(bodies) || bodies.length < 2) return
+  const dt = config.timeStepSeconds
+  const G = config.gravitationalConstant
+  const eps = config.softeningLengthMeters
+  if (!Number.isFinite(dt) || dt <= 0) return
+  if (!Number.isFinite(G) || G <= 0) return
+  if (!Number.isFinite(eps) || eps < 0) return
+  const allFinite = bodies.every(
+    (body) =>
+      Number.isFinite(body.massKg) &&
+      body.massKg > 0 &&
+      Number.isFinite(body.position?.x) &&
+      Number.isFinite(body.position?.y) &&
+      Number.isFinite(body.position?.z) &&
+      Number.isFinite(body.velocity?.x) &&
+      Number.isFinite(body.velocity?.y) &&
+      Number.isFinite(body.velocity?.z),
+  )
+  if (!allFinite) return
+
+  const pairs: RiskPair[] = []
+  for (let i = 0; i < bodies.length; i += 1) {
+    for (let j = i + 1; j < bodies.length; j += 1) {
+      const a = bodies[i]
+      const b = bodies[j]
+      const r = Math.hypot(
+        b.position.x - a.position.x,
+        b.position.y - a.position.y,
+        b.position.z - a.position.z,
+      )
+      const rEff = Math.max(r, eps, MIN_NORMAL)
+      const mu = G * (a.massKg + b.massKg)
+      const vRel = Math.hypot(
+        b.velocity.x - a.velocity.x,
+        b.velocity.y - a.velocity.y,
+        b.velocity.z - a.velocity.z,
+      )
+      const period = 2 * Math.PI * Math.sqrt((rEff * rEff * rEff) / mu)
+      const moveRate = (vRel * dt) / rEff
+      const vEscape = Math.sqrt((2 * mu) / rEff)
+      const speedRate = vRel / vEscape
+      pairs.push({ i, j, r, rEff, period, moveRate, speedRate })
+    }
+  }
+  const minPeriodPair = pairs.reduce((acc, pair) => (pair.period < acc.period ? pair : acc), pairs[0])
+  const minDistancePair = pairs.reduce((acc, pair) => (pair.r < acc.r ? pair : acc), pairs[0])
+  const worstMovePair = pairs.reduce((acc, pair) => (pair.moveRate > acc.moveRate ? pair : acc), pairs[0])
+  const worstSpeedPair = pairs.reduce((acc, pair) => (pair.speedRate > acc.speedRate ? pair : acc), pairs[0])
+  const name = (index: number) => bodies[index].name || `天体 ${index + 1}`
+
+  // TIME_STEP_TOO_LARGE：HIGH 优先。
+  const dtHigh = dt > minPeriodPair.period / 20 || worstMovePair.moveRate > 0.2
+  const dtCaution = dt > minPeriodPair.period / 100 || worstMovePair.moveRate > 0.05
+  if (dtHigh || dtCaution) {
+    const stepsPerPeriod = minPeriodPair.period / dt
+    push(
+      'timeStepSeconds',
+      'TIME_STEP_TOO_LARGE',
+      `时间步长 ${dt.toExponential(3)} s 相对最近轨道周期 ${minPeriodPair.period.toExponential(3)} s 偏大（${name(minPeriodPair.i)} 与 ${name(minPeriodPair.j)}，约每周期 ${stepsPerPeriod.toFixed(1)} 步、单步位移/间距约 ${worstMovePair.moveRate.toExponential(3)}），长期积分可能出现明显能量漂移；减小步长会增加计算量但通常改善稳定性。`,
+      'WARNING',
+      dtHigh ? 'HIGH' : 'CAUTION',
+    )
+  }
+
+  // INITIAL_DISTANCE_TOO_SMALL：只返回 HIGH。
+  const fiveEps = 5 * eps
+  if (eps > 0 && minDistancePair.r < fiveEps) {
+    push(
+      `bodies[${minDistancePair.j}].position`,
+      'INITIAL_DISTANCE_TOO_SMALL',
+      `${name(minDistancePair.i)} 与 ${name(minDistancePair.j)} 初始距离 ${minDistancePair.r.toExponential(3)} m 小于 5ε=${fiveEps.toExponential(3)} m，启动即进入近距离事件，而非一定发生碰撞。`,
+      'WARNING',
+      'HIGH',
+    )
+  }
+
+  // INITIAL_SPEED_HIGH：HIGH 优先。
+  const speedHigh = worstSpeedPair.speedRate > 5
+  const speedCaution = worstSpeedPair.speedRate > 2
+  if (speedHigh || speedCaution) {
+    push(
+      `bodies[${worstSpeedPair.j}].velocity`,
+      'INITIAL_SPEED_HIGH',
+      `${name(worstSpeedPair.i)} 与 ${name(worstSpeedPair.j)} 相对速度与逃逸速度之比约 ${worstSpeedPair.speedRate.toFixed(2)}，可能是合法的非束缚/逃逸初始条件，也可能快速解体。`,
+      'WARNING',
+      speedHigh ? 'HIGH' : 'CAUTION',
+    )
+  }
+
+  // SOFTENING_TOO_SMALL：CAUTION 常发；HIGH 仅在与 HIGH 时间步风险同时出现时。
+  const epsRatio = eps / Math.max(minDistancePair.r, MIN_NORMAL)
+  const softeningCaution = eps === 0 || epsRatio < 1e-6
+  if (softeningCaution) {
+    const zeroNote = eps === 0 ? '，且近遇阈值为 0' : ''
+    push(
+      'softeningLengthMeters',
+      'SOFTENING_TOO_SMALL',
+      `软化长度 ${eps.toExponential(3)} m 相对最近初始间距 ${minDistancePair.r.toExponential(3)} m 过小（ε/rMin≈${epsRatio.toExponential(3)}）${zeroNote}，近接保护弱，可能放大近遇处数值误差。`,
+      'WARNING',
+      dtHigh ? 'HIGH' : 'CAUTION',
+    )
+  }
+
+  // SOFTENING_TOO_LARGE：只返回 HIGH。
+  if (epsRatio > 0.1) {
+    push(
+      'softeningLengthMeters',
+      'SOFTENING_TOO_LARGE',
+      `软化长度 ${eps.toExponential(3)} m 相对最近初始间距 ${minDistancePair.r.toExponential(3)} m 过大（ε/rMin≈${epsRatio.toExponential(3)}），近距离引力会被明显抹平，结果可能偏离目标物理模型。`,
+      'WARNING',
+      'HIGH',
+    )
+  }
+}
 function csvForRecord(id: string): { csv: string; stride: number; count: number } | null {
   const record = getRecord(id)
   if (!record) return null
@@ -241,7 +370,6 @@ export const handlers = [
     deleteRecord(record.id)
     return HttpResponse.json(toExperiment(replaced))
   }),
-
   http.delete(`${BASE}/experiments/:id`, ({ params }) => {
     const record = getRecord(String(params.id))
     if (!record) return errorResponse(404, 'EXPERIMENT_NOT_FOUND', '实验不存在。')
@@ -319,7 +447,6 @@ export const handlers = [
       .map(toSummary)
     return HttpResponse.json(summaries)
   }),
-
   http.get(`${BASE}/experiments/:id/exports/config`, ({ params }) => {
     const record = getRecord(String(params.id))
     if (!record) return errorResponse(404, 'EXPERIMENT_NOT_FOUND', '实验不存在。')
@@ -353,5 +480,66 @@ export const handlers = [
       samples: record.samples,
       generatedAt: new Date().toISOString(),
     })
+  }),
+
+  http.get(`${BASE}/experiments/:id/history`, ({ params, request }) => {
+    const record = getRecord(String(params.id))
+    if (!record) return errorResponse(404, 'EXPERIMENT_NOT_FOUND', '实验不存在。')
+    const url = new URL(request.url)
+    const readInt = (name: string): number | null => {
+      const raw = url.searchParams.get(name)
+      if (raw === null) return null
+      const value = Number(raw)
+      return Number.isSafeInteger(value) ? value : NaN
+    }
+    const fromRaw = readInt('fromStep')
+    const toRaw = readInt('toStep')
+    const maxRaw = readInt('maxPoints')
+    if (
+      (fromRaw !== null && Number.isNaN(fromRaw)) ||
+      (toRaw !== null && Number.isNaN(toRaw)) ||
+      (maxRaw !== null && Number.isNaN(maxRaw))
+    ) {
+      return errorResponse(400, 'MALFORMED_REQUEST', '历史查询参数必须是整数。')
+    }
+    const fromStep = fromRaw ?? 0
+    const maxPoints = maxRaw ?? 1000
+    const toStep = toRaw ?? record.state.step
+    if (fromStep < 0 || toStep < fromStep || toStep > record.state.step || maxPoints < 2 || maxPoints > 2000) {
+      return errorResponse(400, 'MALFORMED_REQUEST', '历史查询参数超出允许范围（fromStep>=0，toStep>=fromStep 且不超过当前步，maxPoints 2～2000）。')
+    }
+    return HttpResponse.json(getHistorySlice(record, fromStep, toStep, maxPoints))
+  }),
+
+  http.post(`${BASE}/experiments/:id/replay-jobs`, async ({ params, request }) => {
+    const record = getRecord(String(params.id))
+    if (!record) return errorResponse(404, 'EXPERIMENT_NOT_FOUND', '实验不存在。')
+    const payload = (await request.json()) as ReplayJobCreateRequest
+    const targetStep = payload?.targetStep
+    if (!Number.isInteger(targetStep) || (targetStep as number) < 0 || (targetStep as number) > record.state.step) {
+      return errorResponse(400, 'MALFORMED_REQUEST', 'targetStep 必须是 [0, 当前步] 内的整数。')
+    }
+    if (pendingReplayJobCount() >= 8) {
+      return errorResponse(429, 'REPLAY_QUEUE_FULL', '回放任务队列已满，请稍后重试。')
+    }
+    const { job, httpStatus } = createReplayJob(record, targetStep)
+    scheduleReplayJobs()
+    return HttpResponse.json(replayJobResponse(job), { status: httpStatus })
+  }),
+
+  http.get(`${BASE}/experiments/:id/replay-jobs/:jobId`, ({ params }) => {
+    const record = getRecord(String(params.id))
+    if (!record) return errorResponse(404, 'EXPERIMENT_NOT_FOUND', '实验不存在。')
+    const job = getReplayJob(record, String(params.jobId))
+    if (!job) return errorResponse(404, 'REPLAY_JOB_NOT_FOUND', '回放任务不存在或已过期。')
+    return HttpResponse.json(replayJobResponse(job))
+  }),
+
+  http.delete(`${BASE}/experiments/:id/replay-jobs/:jobId`, ({ params }) => {
+    const record = getRecord(String(params.id))
+    if (!record) return errorResponse(404, 'EXPERIMENT_NOT_FOUND', '实验不存在。')
+    const deleted = deleteReplayJob(record, String(params.jobId))
+    if (!deleted) return errorResponse(404, 'REPLAY_JOB_NOT_FOUND', '回放任务不存在或已过期。')
+    return new HttpResponse(null, { status: 204 })
   }),
 ]

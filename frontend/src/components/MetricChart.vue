@@ -1,15 +1,17 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts/core'
 import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
+import { usePreferencesStore } from '../stores/preferences'
+import { getChartPalette } from '../lib/theme'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 /**
  * ECharts 折线图：统一封装能量、角动量、间距三类时序。
- * 单位全部为 SI，与契约一致。
+ * 单位全部为 SI，与契约一致。颜色来自语义色板，主题变化时完整刷新。
  */
 const props = defineProps<{
   title: string
@@ -20,38 +22,40 @@ const props = defineProps<{
   paused?: boolean
 }>()
 
+const preferences = usePreferencesStore()
 const chartRef = ref<HTMLDivElement | null>(null)
 let chart: echarts.ECharts | null = null
 
 function buildOption(): echarts.EChartsCoreOption {
+  const palette = getChartPalette(preferences.resolvedTheme)
   return {
     backgroundColor: 'transparent',
     grid: { top: 28, right: 14, bottom: 26, left: 52 },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(12, 22, 38, 0.95)',
-      borderColor: '#22324a',
-      textStyle: { color: '#dfe9f5', fontSize: 11 },
+      backgroundColor: palette.tooltipBackground,
+      borderColor: palette.tooltipBorder,
+      textStyle: { color: palette.tooltipText, fontSize: 11 },
     },
     legend: {
       top: 4,
       right: 12,
-      textStyle: { color: '#8fa3bd', fontSize: 11 },
+      textStyle: { color: palette.legendText, fontSize: 11 },
       icon: 'roundRect',
     },
     xAxis: {
       type: 'value',
-      axisLabel: { color: '#6d829e', fontSize: 10 },
-      axisLine: { lineStyle: { color: '#22324a' } },
-      splitLine: { lineStyle: { color: 'rgba(34, 50, 74, 0.4)' } },
+      axisLabel: { color: palette.axisText, fontSize: 10 },
+      axisLine: { lineStyle: { color: palette.axisLine } },
+      splitLine: { lineStyle: { color: palette.gridLine } },
       name: 'step',
-      nameTextStyle: { color: '#6d829e', fontSize: 10 },
+      nameTextStyle: { color: palette.axisText, fontSize: 10 },
     },
     yAxis: {
       type: 'value',
-      axisLabel: { color: '#6d829e', fontSize: 10 },
-      axisLine: { lineStyle: { color: '#22324a' } },
-      splitLine: { lineStyle: { color: 'rgba(34, 50, 74, 0.4)' } },
+      axisLabel: { color: palette.axisText, fontSize: 10 },
+      axisLine: { lineStyle: { color: palette.axisLine } },
+      splitLine: { lineStyle: { color: palette.gridLine } },
       scale: true,
     },
     series: props.series.map((s) => ({
@@ -122,6 +126,16 @@ watch(
   () => props.paused,
   (paused) => {
     if (!paused) scheduleUpdate()
+  },
+)
+
+// 主题变化时用 notMerge 完整刷新，避免残留旧主题的颜色。
+watch(
+  () => preferences.resolvedTheme,
+  () => {
+    if (!chart) return
+    chart.setOption(buildOption(), { notMerge: true })
+    lastUpdateAt = Date.now()
   },
 )
 

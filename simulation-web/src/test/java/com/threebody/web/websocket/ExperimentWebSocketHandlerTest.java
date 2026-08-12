@@ -8,6 +8,10 @@ import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.threebody.app.domain.EventPhase;
+import com.threebody.app.domain.SimulationEvent;
+import com.threebody.app.domain.SimulationEventType;
 import com.threebody.app.event.ExperimentMessage;
 import com.threebody.app.event.ExperimentMessageType;
 import com.threebody.app.service.ExperimentService;
@@ -17,6 +21,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.CloseStatus;
@@ -56,6 +61,55 @@ class ExperimentWebSocketHandlerTest {
             releaseSend.countDown();
             handler.close();
         }
+    }
+
+    @Test
+    void nearEncounterIsWrappedAsEventWithSchemaVersion11() throws Exception {
+        ExperimentService service = mock(ExperimentService.class);
+        ExperimentWebSocketHandler handler = new ExperimentWebSocketHandler(service);
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("session-1");
+        when(session.getUri()).thenReturn(URI.create("/ws/v1/experiments/experiment"));
+        when(session.isOpen()).thenReturn(true);
+        AtomicReference<String> jsonRef = new AtomicReference<>();
+        doAnswer(invocation -> {
+            jsonRef.set(((TextMessage) invocation.getArgument(0)).getPayload());
+            return null;
+        }).when(session).sendMessage(any(TextMessage.class));
+
+        try {
+            handler.afterConnectionEstablished(session);
+            SimulationEvent event = new SimulationEvent(
+                    1L, "event-1", SimulationEventType.NEAR_ENCOUNTER, EventPhase.ENTER,
+                    10L, 100.0, Instant.EPOCH, "甲 与 乙 进入近距离。",
+                    java.util.List.of("a", "b"), 1.0e6, 5.0e6, 1.0e6, 1.0e6, 10L, 100.0, null, null);
+            handler.onMessage(new ExperimentMessage(
+                    ExperimentMessageType.NEAR_ENCOUNTER, "experiment", 5L,
+                    Instant.EPOCH, event, null));
+            assertTrue(waitForJson(jsonRef));
+
+            ObjectMapper mapper = new ObjectMapper();
+            var envelope = mapper.readTree(jsonRef.get());
+            org.junit.jupiter.api.Assertions.assertEquals("1.1", envelope.get("schemaVersion").asText());
+            org.junit.jupiter.api.Assertions.assertEquals("NEAR_ENCOUNTER", envelope.get("type").asText());
+            org.junit.jupiter.api.Assertions.assertEquals("event-1",
+                    envelope.get("payload").get("event").get("eventId").asText());
+            org.junit.jupiter.api.Assertions.assertEquals("ENTER",
+                    envelope.get("payload").get("event").get("phase").asText());
+        } finally {
+            handler.close();
+        }
+    }
+
+    private static boolean waitForJson(AtomicReference<String> ref) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 2_000L;
+        while (System.currentTimeMillis() < deadline) {
+            if (ref.get() != null) {
+                return true;
+            }
+            Thread.sleep(20);
+        }
+        return false;
     }
 
     private static ExperimentMessage message(long sequence) {

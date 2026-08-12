@@ -418,4 +418,67 @@ class FileExperimentRepositoryTest {
         assertTrue(repo.findTrajectoryAtOrBefore(expId, 0L).isPresent());
         assertEquals(0L, repo.findTrajectoryAtOrBefore(expId, 0L).get().step());
     }
+
+    @Test
+    @DisplayName("旧 manifest 缺少新增事件字段仍可恢复并原子重写")
+    void oldManifestRecoversWithoutNewEventFields() throws Exception {
+        // 模拟 1.0 版本写入的 experiments.json：事件只有旧字段，缺少 eventId/phase/诊断等
+        String oldManifest = """
+                {"experiments":[{"id":"old-exp-1","name":"旧实验","status":"COMPLETED",
+                "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z",
+                "startedAt":null,"completedAt":"2026-01-01T00:00:00Z","endReason":"MAX_STEPS",
+                "config":{"name":"旧配置","bodies":[
+                  {"id":"a","name":"甲","color":"#ffd166","massKg":1.0e30,"position":{"x":0,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}},
+                  {"id":"b","name":"乙","color":"#4d96ff","massKg":1.0e30,"position":{"x":1.0e11,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}}
+                ],"timeStepSeconds":3600,"gravitationalConstant":6.6743e-11,"softeningLengthMeters":1.0e6,
+                "maxSteps":1000,"targetSimulationTimeSeconds":null},
+                "state":null,"metrics":null,
+                "events":[{"sequence":1,"type":"STATUS_CHANGE","step":0,"simulationTimeSeconds":0,
+                  "timestamp":"2026-01-01T00:00:00Z","message":"实验开始运行。","bodyIds":null,"distanceMeters":null}],
+                "trajectoryInfo":{"sampleStride":1,"sampleCount":0,"pointLimit":50000,"liveWindowSize":8000},
+                "lastSequence":1,"errorMessage":null}]}
+                """;
+        Files.writeString(expectedManifest, oldManifest);
+
+        List<Experiment> restored = repo.listAll();
+        assertEquals(1, restored.size(), "旧 manifest 应可恢复");
+        Experiment e = restored.get(0);
+        assertEquals(1, e.events().size());
+        com.threebody.app.domain.SimulationEvent ev = e.events().get(0);
+        assertNull(ev.eventId(), "旧事件缺少 eventId 应恢复为 null");
+        assertNull(ev.phase(), "旧事件缺少 phase 应恢复为 null");
+        assertNull(ev.diagnostic(), "旧事件缺少 diagnostic 应恢复为 null");
+
+        // 修改后原子重写不应丢数据
+        e.setName("已迁移");
+        repo.save(e);
+        List<Experiment> after = repo.listAll();
+        assertEquals("已迁移", after.get(0).name());
+    }
+
+    @Test
+    @DisplayName("旧 NUMERICAL_WARNING 枚举值可读（读取兼容）")
+    void legacyNumericalWarningReadsCompatibility() throws Exception {
+        String manifest = """
+                {"experiments":[{"id":"old-warn","name":"旧告警","status":"COMPLETED",
+                "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z",
+                "startedAt":null,"completedAt":"2026-01-01T00:00:00Z","endReason":"MAX_STEPS",
+                "config":{"name":"旧配置","bodies":[
+                  {"id":"a","name":"甲","color":"#ffd166","massKg":1.0e30,"position":{"x":0,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}},
+                  {"id":"b","name":"乙","color":"#4d96ff","massKg":1.0e30,"position":{"x":1.0e11,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}}
+                ],"timeStepSeconds":3600,"gravitationalConstant":6.6743e-11,"softeningLengthMeters":1.0e6,
+                "maxSteps":1000,"targetSimulationTimeSeconds":null},
+                "state":null,"metrics":null,
+                "events":[{"sequence":1,"type":"NUMERICAL_WARNING","step":5,"simulationTimeSeconds":18000,
+                  "timestamp":"2026-01-01T00:00:00Z","message":"旧数值告警。","bodyIds":null,"distanceMeters":null}],
+                "trajectoryInfo":{"sampleStride":1,"sampleCount":0,"pointLimit":50000,"liveWindowSize":8000},
+                "lastSequence":1,"errorMessage":null}]}
+                """;
+        Files.writeString(expectedManifest, manifest);
+
+        List<Experiment> restored = repo.listAll();
+        assertEquals(1, restored.size());
+        assertEquals(com.threebody.app.domain.SimulationEventType.NUMERICAL_WARNING,
+                restored.get(0).events().get(0).type(), "NUMERICAL_WARNING 应保留读取兼容");
+    }
 }

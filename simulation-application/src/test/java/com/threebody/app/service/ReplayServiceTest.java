@@ -67,6 +67,19 @@ class ReplayServiceTest {
                 3600.0, PhysicalConstants.GRAVITATIONAL_CONSTANT, 1.0e7, 200_000L, null);
     }
 
+    /**
+     * 超长步数配置（仅用于队列满测试）：清空归档后首个任务需从初始状态重算数百万步、
+     * 耗时数秒，保证 worker 在提交 8 个填充任务期间保持忙碌，队列稳定堆满（避免竞态 flaky）。
+     */
+    private SimulationConfig hugeConfig() {
+        return new SimulationConfig(
+                "回放超长配置",
+                List.of(
+                        new BodySpec("a", "甲", "#ffd166", 1.0e30, Vector3.of(-1.0e11, 0, 0), Vector3.of(0, -1.3e4, 0)),
+                        new BodySpec("b", "乙", "#4d96ff", 1.0e30, Vector3.of(1.0e11, 0, 0), Vector3.of(0, 1.3e4, 0))),
+                3600.0, PhysicalConstants.GRAVITATIONAL_CONSTANT, 1.0e7, 3_000_000L, null);
+    }
+
     private boolean waitUntil(String desc, long timeoutMs,
             java.util.function.Supplier<Boolean> condition) throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMs;
@@ -123,8 +136,8 @@ class ReplayServiceTest {
     @Test
     @DisplayName("待处理任务达到 8 个上限后返回队列满")
     void queueFullWhenExceedingCapacity() throws Exception {
-        com.threebody.app.domain.Experiment e = experimentService.createExperiment("回放", longConfig());
-        assertTrue(waitUntil("运行完成", 15_000,
+        com.threebody.app.domain.Experiment e = experimentService.createExperiment("回放", hugeConfig());
+        assertTrue(waitUntil("运行完成", 20_000,
                 () -> experimentService.getExperiment(e.id()).status() == ExperimentStatus.COMPLETED));
         long currentStep = experimentService.getExperiment(e.id()).step();
         // 清空归档，使每个任务都需从初始状态重算较远步，确保 worker 忙碌时队列保持满

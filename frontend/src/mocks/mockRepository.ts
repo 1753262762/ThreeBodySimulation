@@ -5,23 +5,53 @@
  * 队列顺序消费，并按契约维护状态机、指标、事件与采样。
  */
 import {
+  type Diagnostic,
   type EndReason,
+  type EventPhase,
   type Experiment,
   type ExperimentStatus,
   type ExperimentSummary,
+  type HistoryResponse,
   type Metrics,
   type Preset,
   type ReportSamplePoint,
+  type ReplayJobStatus,
+  type ReplaySource,
   type SimulationConfig,
   type SimulationEvent,
+  type SimulationState,
+  type Vector3,
 } from '../contracts'
 import { closestPair, computeMetrics, rk4Step, type MockBody, type MockState } from './mockEngine'
 import presetsFixture from '../../../contracts/examples/presets.json'
 
 const ARCHIVE_LIMIT = 50000
 const LIVE_WINDOW = 8000
+/** 重算任务单 tick 最大推进步数，避免长时间阻塞主线程。 */
+const REPLAY_STEPS_PER_TICK = 5000
+/** 重算结果在内存中的保留时间，与后端一致为 10 分钟。 */
+const REPLAY_RETENTION_MS = 10 * 60 * 1000
 
 export const mockPresets = presetsFixture as unknown as Preset[]
+
+/** Mock 回放任务。transient 字段 _state 为执行期内部状态，不对外暴露。 */
+export interface MockReplayJob {
+  jobId: string
+  experimentId: string
+  targetStep: number
+  status: ReplayJobStatus
+  source: ReplaySource | null
+  baseStep: number | null
+  completedSteps: number
+  totalSteps: number
+  progress: number
+  result: SimulationState | null
+  error: string | null
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
+  _state: MockState | null
+}
 
 interface MockRecord {
   id: string
@@ -37,6 +67,7 @@ interface MockRecord {
   sampleStride: number
   eventSequence: number
   wsSequence: number
+  replayJobs: Map<string, MockReplayJob>
   createdAt: string
   updatedAt: string
   startedAt: string | null
@@ -49,13 +80,21 @@ interface MockRecord {
 }
 
 let idCounter = 0
+let jobCounter = 0
 let queueCounter = 0
 const records = new Map<string, MockRecord>()
+let replayTimer: ReturnType<typeof setInterval> | null = null
 
 function nextId(): string {
   idCounter += 1
   const hex = idCounter.toString(16).padStart(12, '0')
-  return `00000000-0000-4000-8000-${hex}`
+  return '00000000-0000-4000-8000-' + hex
+}
+
+function nextJobId(): string {
+  jobCounter += 1
+  const hex = jobCounter.toString(16).padStart(12, '0')
+  return '10000000-0000-4000-8000-' + hex
 }
 
 function nowIso(): string {
@@ -64,7 +103,7 @@ function nowIso(): string {
 
 function toMockBodies(config: SimulationConfig): MockBody[] {
   return config.bodies.map((body, index) => ({
-    id: body.id ?? `${index + 1}`.padStart(8, '0') + '-0000-4000-8000-000000000000',
+    id: body.id ?? (index + 1).toString().padStart(8, '0') + '-0000-4000-8000-000000000000',
     name: body.name,
     color: body.color ?? '#ffc857',
     massKg: body.massKg,
@@ -80,7 +119,7 @@ export function normalizeConfig(config: SimulationConfig): SimulationConfig {
     ...config,
     bodies: config.bodies.map((body, index) => ({
       ...body,
-      id: body.id ?? `${(index + 1).toString().padStart(8, '0')}-0000-4000-8000-000000000000`,
+      id: body.id ?? (index + 1).toString().padStart(8, '0') + '-0000-4000-8000-000000000000',
       color: body.color ?? palette[index % palette.length],
     })),
   }
@@ -92,7 +131,7 @@ export function createRecord(config: SimulationConfig, name?: string): MockRecor
   queueCounter += 1
   const record: MockRecord = {
     id,
-    name: name ?? normalized.name ?? `实验 ${idCounter}`,
+    name: name ?? normalized.name ?? '实验 ' + idCounter,
     status: 'QUEUED',
     config: normalized,
     state: {
@@ -108,6 +147,7 @@ export function createRecord(config: SimulationConfig, name?: string): MockRecor
     sampleStride: 1,
     eventSequence: 0,
     wsSequence: 0,
+    replayJobs: new Map(),
     createdAt: nowIso(),
     updatedAt: nowIso(),
     startedAt: null,
@@ -154,26 +194,360 @@ function recordSample(record: MockRecord): void {
   }
 }
 
+export interface AddEventOptions {
+  eventId?: string | null
+  phase?: EventPhase | null
+  bodyIds?: string[] | null
+  distanceMeters?: number | null
+  thresholdMeters?: number | null
+  triggerDistanceMeters?: number | null
+  closestDistanceMeters?: number | null
+  closestStep?: number | null
+  closestSimulationTimeSeconds?: number | null
+  midpointPosition?: Vector3 | null
+  diagnostic?: Diagnostic | null
+}
+
 export function addEvent(
   record: MockRecord,
   type: SimulationEvent['type'],
   message: string,
-  bodyIds: string[] | null = null,
-  distanceMeters: number | null = null,
+  options: AddEventOptions = {},
 ): SimulationEvent {
   record.eventSequence += 1
   const event: SimulationEvent = {
     sequence: record.eventSequence,
+    eventId: options.eventId ?? undefined,
     type,
+    phase: options.phase ?? undefined,
     step: record.state.step,
     simulationTimeSeconds: record.state.simulationTimeSeconds,
     timestamp: nowIso(),
     message,
-    bodyIds,
-    distanceMeters,
+    bodyIds: options.bodyIds ?? null,
+    distanceMeters: options.distanceMeters ?? null,
+    thresholdMeters: options.thresholdMeters ?? null,
+    triggerDistanceMeters: options.triggerDistanceMeters ?? null,
+    closestDistanceMeters: options.closestDistanceMeters ?? null,
+    closestStep: options.closestStep ?? null,
+    closestSimulationTimeSeconds: options.closestSimulationTimeSeconds ?? null,
+    midpointPosition: options.midpointPosition ?? undefined,
+    diagnostic: options.diagnostic ?? undefined,
   }
   record.events.push(event)
   return event
+}
+
+/** 按 eventId 合并事件：存在则原位替换并保留创建顺序，同时移除同 ID 的旧副本。 */
+export function upsertEvent(record: MockRecord, event: SimulationEvent): SimulationEvent {
+  if (event.eventId) {
+    const index = record.events.findIndex((item) => item.eventId === event.eventId)
+    if (index >= 0) {
+      const merged = { ...event, sequence: record.events[index].sequence }
+      record.events[index] = merged
+      for (let i = record.events.length - 1; i > index; i -= 1) {
+        if (record.events[i].eventId === event.eventId) {
+          record.events.splice(i, 1)
+        }
+      }
+      return merged
+    }
+  }
+  record.events.push(event)
+  return event
+}
+
+/**
+ * 带稳定 eventId 的事件发布：同一 eventId 的修订原地替换（sequence 保持创建值），
+ * 新事件才分配新 sequence。用于 NEAR_ENCOUNTER / DIAGNOSTIC 生命周期。
+ */
+export function emitEvent(
+  record: MockRecord,
+  type: SimulationEvent['type'],
+  message: string,
+  options: AddEventOptions = {},
+): SimulationEvent {
+  return upsertEvent(record, addEvent(record, type, message, options))
+}
+
+function toSimulationState(state: MockState): SimulationState {
+  return {
+    step: state.step,
+    simulationTimeSeconds: state.simulationTimeSeconds,
+    bodies: state.bodies.map((body) => ({
+      id: body.id,
+      position: { ...body.position },
+      velocity: { ...body.velocity },
+    })),
+  }
+}
+
+function mockStateFromSimulation(state: SimulationState, config: SimulationConfig): MockState {
+  const byId = new Map(state.bodies.map((body) => [body.id, body]))
+  return {
+    step: state.step,
+    simulationTimeSeconds: state.simulationTimeSeconds,
+    bodies: config.bodies.map((body) => {
+      const current = byId.get(body.id ?? '')
+      return {
+        id: body.id ?? '',
+        name: body.name,
+        color: body.color ?? '#ffc857',
+        massKg: body.massKg,
+        position: current ? { ...current.position } : { ...body.position },
+        velocity: current ? { ...current.velocity } : { ...body.velocity },
+      }
+    }),
+  }
+}
+
+/** 历史范围查询：返回落在 [fromStep, toStep] 的归档点，超过 maxPoints 时均匀抽样保留首尾。 */
+export function getHistorySlice(
+  record: MockRecord,
+  fromStep: number,
+  toStep: number,
+  maxPoints: number,
+): HistoryResponse {
+  const points = record.samples.filter((sample) => sample.step >= fromStep && sample.step <= toStep)
+  let selected: ReportSamplePoint[] = points
+  if (points.length > maxPoints && points.length >= 2) {
+    selected = [points[0]]
+    const stride = points.length / maxPoints
+    for (let i = 1; i < maxPoints - 1; i += 1) {
+      selected.push(points[Math.floor(i * stride)])
+    }
+    selected.push(points[points.length - 1])
+  }
+  const statePoints: SimulationState[] = selected.map((point) => ({
+    step: point.step,
+    simulationTimeSeconds: point.simulationTimeSeconds,
+    bodies: point.bodies.map((body) => ({
+      id: body.id,
+      position: { ...body.position },
+      velocity: { ...body.velocity },
+    })),
+  }))
+  const availableFromStep = points.length > 0 ? points[0].step : null
+  const availableToStep = points.length > 0 ? points[points.length - 1].step : null
+  return {
+    points: statePoints,
+    availableFromStep,
+    availableToStep,
+    archiveSampleStride: record.sampleStride,
+    downsampled: points.length > maxPoints,
+    currentState: toSimulationState(record.state),
+  }
+}
+
+export function findTrajectoryAt(record: MockRecord, step: number): SimulationState | null {
+  const sample = record.samples.find((item) => item.step === step)
+  if (!sample) return null
+  return {
+    step: sample.step,
+    simulationTimeSeconds: sample.simulationTimeSeconds,
+    bodies: sample.bodies.map((body) => ({
+      id: body.id,
+      position: { ...body.position },
+      velocity: { ...body.velocity },
+    })),
+  }
+}
+
+export function findTrajectoryAtOrBefore(record: MockRecord, step: number): SimulationState | null {
+  let best: SimulationState | null = null
+  for (const sample of record.samples) {
+    if (sample.step > step) break
+    best = {
+      step: sample.step,
+      simulationTimeSeconds: sample.simulationTimeSeconds,
+      bodies: sample.bodies.map((body) => ({
+        id: body.id,
+        position: { ...body.position },
+        velocity: { ...body.velocity },
+      })),
+    }
+  }
+  return best
+}
+
+// ---- 回放任务 ----
+
+export function pendingReplayJobCount(): number {
+  let count = 0
+  for (const record of records.values()) {
+    for (const job of record.replayJobs.values()) {
+      if (job.status === 'QUEUED' || job.status === 'RUNNING') count += 1
+    }
+  }
+  return count
+}
+
+function makeJob(
+  record: MockRecord,
+  targetStep: number,
+  status: ReplayJobStatus,
+  source: ReplaySource | null,
+  result: SimulationState | null,
+  baseStep: number | null,
+  completedSteps: number,
+  progress: number,
+): MockReplayJob {
+  const jobId = nextJobId()
+  return {
+    jobId,
+    experimentId: record.id,
+    targetStep,
+    status,
+    source,
+    baseStep,
+    completedSteps,
+    totalSteps: Math.max(1, targetStep - (baseStep ?? 0)),
+    progress,
+    result,
+    error: null,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+    expiresAt: new Date(Date.now() + REPLAY_RETENTION_MS).toISOString(),
+    _state: null,
+  }
+}
+
+/** 创建回放任务；返回 HTTP 语义需要的状态码 200（已完成）或 202（已排队重算）。 */
+export function createReplayJob(
+  record: MockRecord,
+  targetStep: number,
+): { job: MockReplayJob; httpStatus: 200 | 202 } {
+  const current = toSimulationState(record.state)
+  if (targetStep === record.state.step) {
+    const job = makeJob(record, targetStep, 'COMPLETED', 'CURRENT_STATE', current, targetStep, 0, 1)
+    record.replayJobs.set(job.jobId, job)
+    return { job, httpStatus: 200 }
+  }
+  const exact = findTrajectoryAt(record, targetStep)
+  if (exact) {
+    const job = makeJob(record, targetStep, 'COMPLETED', 'ARCHIVE_EXACT', exact, targetStep, 0, 1)
+    record.replayJobs.set(job.jobId, job)
+    return { job, httpStatus: 200 }
+  }
+  const floor = findTrajectoryAtOrBefore(record, targetStep)
+  const baseStep = floor?.step ?? 0
+  const totalSteps = Math.max(1, targetStep - baseStep)
+  const job = makeJob(record, targetStep, 'QUEUED', 'RECOMPUTED', null, baseStep, 0, 0)
+  job.totalSteps = totalSteps
+  job._state = floor ? mockStateFromSimulation(floor, record.config) : null
+  record.replayJobs.set(job.jobId, job)
+  return { job, httpStatus: 202 }
+}
+
+export function getReplayJob(record: MockRecord, jobId: string): MockReplayJob | null {
+  return record.replayJobs.get(jobId) ?? null
+}
+
+/** 删除回放任务：运行中任务进入 CANCELLED，已终态任务保持原终态。 */
+export function deleteReplayJob(record: MockRecord, jobId: string): boolean {
+  const job = record.replayJobs.get(jobId)
+  if (!job) return false
+  if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+    job.status = 'CANCELLED'
+    job.updatedAt = nowIso()
+    job.expiresAt = new Date(Date.now() + REPLAY_RETENTION_MS).toISOString()
+  }
+  return true
+}
+
+export function replayJobResponse(job: MockReplayJob) {
+  return {
+    jobId: job.jobId,
+    experimentId: job.experimentId,
+    targetStep: job.targetStep,
+    status: job.status,
+    source: job.source,
+    baseStep: job.baseStep,
+    completedSteps: job.completedSteps,
+    totalSteps: job.totalSteps,
+    progress: job.progress,
+    result: job.result,
+    error: job.error,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    expiresAt: job.expiresAt,
+  }
+}
+
+function tickReplayJob(record: MockRecord, job: MockReplayJob): void {
+  if (job.status === 'QUEUED') {
+    job.status = 'RUNNING'
+    job.updatedAt = nowIso()
+    if (!job._state) {
+      const floor = findTrajectoryAtOrBefore(record, job.baseStep ?? 0)
+      job._state = floor ? mockStateFromSimulation(floor, record.config) : null
+    }
+    if (!job._state) {
+      job._state = {
+        step: 0,
+        simulationTimeSeconds: 0,
+        bodies: toMockBodies(record.config),
+      }
+    }
+  }
+  const target = job.targetStep
+  let advanced = 0
+  while (job._state && job._state.step < target && advanced < REPLAY_STEPS_PER_TICK) {
+    job._state = rk4Step(job._state, record.config)
+    advanced += 1
+  }
+  if (job._state) {
+    job.completedSteps = job._state.step - (job.baseStep ?? 0)
+    job.progress = job.totalSteps > 0 ? Math.min(1, job.completedSteps / job.totalSteps) : 1
+  }
+  job.updatedAt = nowIso()
+  if (job._state && job._state.step >= target) {
+    job.status = 'COMPLETED'
+    job.progress = 1
+    job.result = toSimulationState(job._state)
+    job.updatedAt = nowIso()
+    job.expiresAt = new Date(Date.now() + REPLAY_RETENTION_MS).toISOString()
+  }
+}
+
+function cleanupExpiredJobs(): void {
+  const now = Date.now()
+  for (const record of records.values()) {
+    for (const [jobId, job] of record.replayJobs) {
+      const terminal = job.status === 'COMPLETED' || job.status === 'CANCELLED' || job.status === 'FAILED'
+      if (terminal && new Date(job.expiresAt).getTime() <= now) {
+        record.replayJobs.delete(jobId)
+      }
+    }
+  }
+}
+
+/** 推进所有回放任务；没有待处理任务时自动停止定时器。 */
+export function scheduleReplayJobs(): void {
+  if (replayTimer) return
+  replayTimer = setInterval(() => {
+    let busy = false
+    cleanupExpiredJobs()
+    for (const record of records.values()) {
+      for (const job of record.replayJobs.values()) {
+        if (job.status === 'QUEUED' || job.status === 'RUNNING') {
+          busy = true
+          tickReplayJob(record, job)
+        }
+      }
+    }
+    if (!busy && replayTimer) {
+      clearInterval(replayTimer)
+      replayTimer = null
+    }
+  }, 20)
+}
+
+export function stopReplayJobs(): void {
+  if (replayTimer) {
+    clearInterval(replayTimer)
+    replayTimer = null
+  }
 }
 
 function endConditionReached(record: MockRecord): EndReason {
@@ -367,8 +741,10 @@ export function reorder(orderedIds: string[]): void {
 }
 
 export function resetRepository(): void {
+  stopReplayJobs()
   records.clear()
   idCounter = 0
+  jobCounter = 0
   queueCounter = 0
 }
 

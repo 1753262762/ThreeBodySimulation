@@ -5,13 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc -b && vite build",
+    "build": "node --max-old-space-size=4096 node_modules/vue-tsc/bin/vue-tsc.js -b && node --max-old-space-size=4096 node_modules/vite/bin/vite.js build",
     "preview": "vite preview",
     "generate:contracts": "node scripts/generate-contracts.mjs",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:watch": "vitest",
-    "verify": "npm run generate:contracts && vue-tsc -b && vitest run && vite build && playwright test"
+    "verify": "npm run generate:contracts && node --max-old-space-size=4096 node_modules/vue-tsc/bin/vue-tsc.js -b && vitest run && node --max-old-space-size=4096 node_modules/vite/bin/vite.js build && playwright test"
   },
   "dependencies": {
     "echarts": "^6.1.0",

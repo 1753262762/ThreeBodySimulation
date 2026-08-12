@@ -5,6 +5,8 @@
  * - REST 是权威全量来源，WebSocket 只提供增量。
  * - 重连期间暂停增量应用，等 REST 全量同步完成再恢复。
  * - 轨迹按天体保留最近 LIVE_TRAIL_LIMIT 个三维点，切换投影时复用同一份数据。
+ * - 历史回看使用独立 PlaybackBuffer；REVIEW 不被实时帧覆盖，LIVE 始终摄入最新权威状态。
+ * - 拖动只查缓存，pointerup/事件定位才请求精确步；历史请求使用 AbortController 与 100ms 防抖。
  */
 import { defineStore } from 'pinia'
 import { computed, markRaw, ref, shallowRef } from 'vue'
@@ -16,6 +18,7 @@ import {
   type ExperimentStatus,
   type ExperimentSummary,
   type Metrics,
+  type ReplayJob,
   type SimulationConfig,
   type SimulationEvent,
   type SimulationState,
@@ -26,10 +29,10 @@ import {
   snapshotToState,
   type ConnectionState,
   type MetricsPayload,
-  type NearEncounterPayload,
   type StatusPayload,
   type TrajectoryPayload,
 } from '../lib/experimentSocket'
+import { PlaybackBuffer, type InterpolatedPoint } from '../lib/playbackBuffer'
 import { SnapshotBuffer } from '../lib/snapshotBuffer'
 import { TrajectoryBuffer } from '../lib/trajectoryBuffer'
 
@@ -43,7 +46,28 @@ export interface MetricSample {
   minimumPairDistanceMeters: number
 }
 
+export type PlaybackMode = 'LIVE' | 'REVIEW_PAUSED' | 'REVIEW_PLAYING'
+export type PlaybackPrecision = 'EXACT' | 'APPROXIMATE' | 'RESOLVING' | 'ERROR'
+
+export interface EncounterAlert {
+  /** 稳定键：eventId，1.0 回退为 sequence 前缀。 */
+  key: string
+  event: SimulationEvent
+}
+
 const MAX_METRIC_SAMPLES = 3000
+const MAX_EVENTS = 1000
+const MAX_ALERTS = 20
+const REPLAY_POLL_MS = 200
+const HISTORY_DEBOUNCE_MS = 100
+/** 历史播放每秒推进当前可用范围的 1%。 */
+const REVIEW_TICK_MS = 250
+const REVIEW_RATE_PER_SECOND = 0.01
+
+/** 逻辑事件键：新事件用 eventId，旧 1.0 事件回退 sequence。 */
+export function eventKey(event: Pick<SimulationEvent, 'eventId' | 'sequence'>): string {
+  return event.eventId ?? `seq-${event.sequence}`
+}
 
 export const useExperimentsStore = defineStore('experiments', () => {
   const summaries = ref<ExperimentSummary[]>([])
@@ -59,8 +83,8 @@ export const useExperimentsStore = defineStore('experiments', () => {
   const liveMetrics = ref<Metrics | null>(null)
   const metricSamples = ref<MetricSample[]>([])
   const events = ref<SimulationEvent[]>([])
-  /** 近距离事件的非阻塞提示队列，界面消费后移除。 */
-  const encounterAlerts = ref<NearEncounterPayload[]>([])
+  /** 近距离事件的非阻塞提示队列，按稳定键消费后移除。 */
+  const encounterAlerts = ref<EncounterAlert[]>([])
 
   const connectionState = ref<ConnectionState>('IDLE')
   const actionPending = ref<ExperimentAction | null>(null)
@@ -73,9 +97,29 @@ export const useExperimentsStore = defineStore('experiments', () => {
   const trails = shallowRef<TrajectoryBuffer>(markRaw(new TrajectoryBuffer(LIVE_TRAIL_LIMIT)))
   const trailVersion = ref(0)
 
+  // ---- 历史回看状态（F5） ----
+  const playbackBufferRef = shallowRef<PlaybackBuffer | null>(null)
+  const playbackMode = ref<PlaybackMode>('LIVE')
+  const playbackPrecision = ref<PlaybackPrecision>('EXACT')
+  const cursorStep = ref(0)
+  const cursorTimeSeconds = ref(0)
+  const selectedEventId = ref<string | null>(null)
+  const historyLoading = ref(false)
+  const historyError = ref<string | null>(null)
+  const activeReplayJob = ref<ReplayJob | null>(null)
+  const availableFromStep = ref<number | null>(null)
+  const availableToStep = ref<number | null>(null)
+  const archiveSampleStride = ref(1)
+
   let socket: ExperimentSocket | null = null
   /** 重连后 REST 全量同步未完成时挂起增量。 */
   let resyncing = false
+  let historyAbort: AbortController | null = null
+  let historyDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  let replayPollTimer: ReturnType<typeof setTimeout> | null = null
+  let reviewTickTimer: ReturnType<typeof setInterval> | null = null
+  /** 当前持有的回放任务；离开回看、切换实验或卸载时 DELETE。 */
+  let ownedReplayJobId: string | null = null
 
   const queued = computed(() => summaries.value.filter((item) => item.status === 'QUEUED'))
   const running = computed(() => summaries.value.find((item) => item.status === 'RUNNING') ?? null)
@@ -84,6 +128,38 @@ export const useExperimentsStore = defineStore('experiments', () => {
   )
 
   const currentStatus = computed<ExperimentStatus | null>(() => current.value?.status ?? null)
+
+  /** 计划结束步：两个结束条件同时存在时先达到者结束。 */
+  const plannedEndStep = computed(() => {
+    const experiment = current.value
+    if (!experiment) return 0
+    const { maxSteps, targetSimulationTimeSeconds, timeStepSeconds } = experiment.config
+    const candidates: number[] = []
+    if (maxSteps !== null && maxSteps !== undefined && maxSteps > 0) candidates.push(maxSteps)
+    if (
+      targetSimulationTimeSeconds !== null &&
+      targetSimulationTimeSeconds !== undefined &&
+      timeStepSeconds > 0
+    ) {
+      candidates.push(Math.ceil(targetSimulationTimeSeconds / timeStepSeconds))
+    }
+    if (candidates.length === 0) return Math.max(availableToStep.value ?? 0, experiment.progress.step)
+    return Math.min(...candidates)
+  })
+
+  const isReviewing = computed(() => playbackMode.value !== 'LIVE')
+
+  /** 视图统一选择：LIVE 用实时状态，REVIEW 用回放缓存（近似插值只用于显示）。 */
+  const displayState = computed<SimulationState | null>(() => {
+    if (!isReviewing.value) return liveState.value
+    const point = playbackBufferRef.value?.interpolateAt(cursorStep.value)
+    return point ? interpolatedToState(point) : liveState.value
+  })
+
+  /** 历史轨迹只绘制到 cursorStep；LIVE 使用当前权威步。 */
+  const trailCutoffStep = computed(() =>
+    isReviewing.value ? cursorStep.value : (liveState.value?.step ?? current.value?.progress.step ?? Number.POSITIVE_INFINITY),
+  )
 
   function can(action: ExperimentAction): boolean {
     const status = currentStatus.value
@@ -101,6 +177,27 @@ export const useExperimentsStore = defineStore('experiments', () => {
     trailVersion.value += 1
   }
 
+  function clearPlaybackState(): void {
+    stopReplayPolling()
+    stopReviewTicker()
+    clearHistoryDebounce()
+    historyAbort?.abort()
+    historyAbort = null
+    playbackBufferRef.value = null
+    playbackMode.value = 'LIVE'
+    playbackPrecision.value = 'EXACT'
+    cursorStep.value = 0
+    cursorTimeSeconds.value = 0
+    selectedEventId.value = null
+    historyLoading.value = false
+    historyError.value = null
+    activeReplayJob.value = null
+    ownedReplayJobId = null
+    availableFromStep.value = null
+    availableToStep.value = null
+    archiveSampleStride.value = 1
+  }
+
   async function loadList(): Promise<void> {
     listLoading.value = true
     listError.value = null
@@ -115,6 +212,27 @@ export const useExperimentsStore = defineStore('experiments', () => {
     }
   }
 
+  /** 按 eventId upsert 事件；1.0 旧事件回退 sequence 只读键。 */
+  function upsertEvent(event: SimulationEvent): void {
+    const key = eventKey(event)
+    const index = events.value.findIndex((item) => eventKey(item) === key)
+    if (index >= 0) {
+      events.value = events.value.map((item, i) => (i === index ? event : item))
+    } else {
+      events.value = [...events.value, event].slice(-MAX_EVENTS)
+    }
+  }
+
+  function pushEncounterAlert(event: SimulationEvent): void {
+    const key = eventKey(event)
+    const existing = encounterAlerts.value.findIndex((item) => item.key === key)
+    if (existing >= 0) {
+      encounterAlerts.value = encounterAlerts.value.map((item, i) => (i === existing ? { key, event } : item))
+    } else {
+      encounterAlerts.value = [...encounterAlerts.value, { key, event }].slice(-MAX_ALERTS)
+    }
+  }
+
   /** 全量同步：REST 结果直接覆盖本地状态，并把序列号下限交给 WebSocket。 */
   async function loadExperiment(id: string, options: { keepBuffers?: boolean } = {}): Promise<void> {
     currentLoading.value = true
@@ -124,6 +242,8 @@ export const useExperimentsStore = defineStore('experiments', () => {
       current.value = experiment
       if (!options.keepBuffers) {
         resetLiveBuffers()
+        clearPlaybackState()
+        playbackBufferRef.value = markRaw(new PlaybackBuffer(experiment.config.bodies.map((b) => b.id ?? b.name)))
       }
       if (experiment.state) {
         liveState.value = experiment.state
@@ -136,6 +256,10 @@ export const useExperimentsStore = defineStore('experiments', () => {
       events.value = experiment.events ?? []
       if (typeof experiment.lastSequence === 'number') {
         socket?.setSequenceFloor(experiment.lastSequence)
+      }
+      // 初次选择实验时请求整个可用范围的 overview。
+      if (!options.keepBuffers) {
+        void loadHistoryOverview(id)
       }
     } catch (error) {
       currentError.value = error instanceof ApiError ? error.message : '加载实验详情失败。'
@@ -162,6 +286,326 @@ export const useExperimentsStore = defineStore('experiments', () => {
 
   function pushTrailPoint(bodyId: string, step: number, x: number, y: number, z: number): boolean {
     return trails.value.getOrCreate(bodyId).append(step, x, y, z)
+  }
+
+  // ---- 历史查询与精确重建（F5） ----
+
+  function clearHistoryDebounce(): void {
+    if (historyDebounceTimer !== null) {
+      clearTimeout(historyDebounceTimer)
+      historyDebounceTimer = null
+    }
+  }
+
+  function applyHistoryResponse(response: Awaited<ReturnType<typeof api.getHistory>>): void {
+    const buffer = playbackBufferRef.value
+    if (buffer && response.points.length > 0) {
+      buffer.replaceOverview(response.points)
+    }
+    if (response.currentState) {
+      // currentState 按 step 去重合并进 live 层，保证运行中上界可见。
+      playbackBufferRef.value?.appendLive([response.currentState])
+    }
+    if (response.availableFromStep !== null && response.availableFromStep !== undefined) {
+      availableFromStep.value = response.availableFromStep
+    }
+    if (response.availableToStep !== null && response.availableToStep !== undefined) {
+      availableToStep.value = response.availableToStep
+    }
+    archiveSampleStride.value = response.archiveSampleStride
+  }
+
+  /** 初次 overview：请求整个可用范围（最多 2,000 点）。 */
+  async function loadHistoryOverview(id: string): Promise<void> {
+    const experiment = current.value
+    if (!experiment) return
+    historyAbort?.abort()
+    const controller = new AbortController()
+    historyAbort = controller
+    historyLoading.value = true
+    historyError.value = null
+    try {
+      const response = await api.getHistory(
+        id,
+        { fromStep: 0, toStep: experiment.progress.step, maxPoints: 2000 },
+        controller.signal,
+      )
+      if (controller.signal.aborted) return
+      applyHistoryResponse(response)
+    } catch (error) {
+      if (controller.signal.aborted) return
+      if (error instanceof ApiError && !error.isNotFound) {
+        historyError.value = error.message
+      }
+    } finally {
+      if (historyAbort === controller) {
+        historyLoading.value = false
+        historyAbort = null
+      }
+    }
+  }
+
+  /** focus 范围：以目标步为中心，防抖 100ms，新的请求取消旧请求。 */
+  function scheduleFocusRange(id: string, centerStep: number): void {
+    clearHistoryDebounce()
+    historyDebounceTimer = setTimeout(() => {
+      historyDebounceTimer = null
+      void loadFocusRange(id, centerStep)
+    }, HISTORY_DEBOUNCE_MS)
+  }
+
+  async function loadFocusRange(id: string, centerStep: number): Promise<void> {
+    historyAbort?.abort()
+    const controller = new AbortController()
+    historyAbort = controller
+    historyLoading.value = true
+    try {
+      const radius = 1000
+      const response = await api.getHistory(
+        id,
+        {
+          fromStep: Math.max(0, centerStep - radius),
+          toStep: centerStep + radius,
+          maxPoints: 2000,
+        },
+        controller.signal,
+      )
+      if (controller.signal.aborted) return
+      const buffer = playbackBufferRef.value
+      if (buffer && response.points.length > 0) buffer.replaceFocus(response.points)
+      if (response.currentState) buffer?.appendLive([response.currentState])
+      if (response.availableToStep !== null && response.availableToStep !== undefined) {
+        availableToStep.value = response.availableToStep
+      }
+    } catch (error) {
+      if (controller.signal.aborted) return
+      if (error instanceof ApiError && !error.isNotFound) {
+        historyError.value = error.message
+      }
+    } finally {
+      if (historyAbort === controller) {
+        historyLoading.value = false
+        historyAbort = null
+      }
+    }
+  }
+
+  function stopReplayPolling(): void {
+    if (replayPollTimer !== null) {
+      clearTimeout(replayPollTimer)
+      replayPollTimer = null
+    }
+  }
+
+  function scheduleReplayPoll(id: string): void {
+    stopReplayPolling()
+    replayPollTimer = setTimeout(() => {
+      replayPollTimer = null
+      void pollReplayJob(id)
+    }, REPLAY_POLL_MS)
+  }
+
+  async function pollReplayJob(id: string): Promise<void> {
+    const job = activeReplayJob.value
+    if (!job) return
+    try {
+      const updated = await api.getReplayJob(id, job.jobId)
+      activeReplayJob.value = updated
+      if (updated.status === 'COMPLETED' && updated.result) {
+        playbackBufferRef.value?.setExact(updated.result)
+        playbackPrecision.value = 'EXACT'
+        cursorStep.value = updated.result.step
+        cursorTimeSeconds.value = updated.result.simulationTimeSeconds
+        stopReplayPolling()
+      } else if (updated.status === 'CANCELLED' || updated.status === 'FAILED') {
+        playbackPrecision.value = 'ERROR'
+        historyError.value = updated.error ?? '精确重建任务失败。'
+        stopReplayPolling()
+      } else {
+        scheduleReplayPoll(id)
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.isNotFound) {
+        playbackPrecision.value = 'ERROR'
+        historyError.value = '回放任务已过期或不存在。'
+        activeReplayJob.value = null
+        ownedReplayJobId = null
+        stopReplayPolling()
+      } else {
+        // 网络抖动：继续轮询。
+        scheduleReplayPoll(id)
+      }
+    }
+  }
+
+  async function deleteOwnedReplayJob(id: string): Promise<void> {
+    const jobId = ownedReplayJobId
+    if (!jobId) return
+    ownedReplayJobId = null
+    try {
+      await api.deleteReplayJob(id, jobId)
+    } catch {
+      // 任务可能已过期（404）或已被清理，忽略。
+    }
+  }
+
+  /** 创建精确重建任务并轮询；新任务取消并 DELETE 旧任务。 */
+  async function requestExactStep(id: string, targetStep: number): Promise<void> {
+    stopReplayPolling()
+    await deleteOwnedReplayJob(id)
+    playbackPrecision.value = 'RESOLVING'
+    historyError.value = null
+    try {
+      const job = await api.createReplayJob(id, targetStep)
+      activeReplayJob.value = job
+      ownedReplayJobId = job.jobId
+      if (job.status === 'COMPLETED' && job.result) {
+        playbackBufferRef.value?.setExact(job.result)
+        playbackPrecision.value = 'EXACT'
+        cursorStep.value = job.result.step
+        cursorTimeSeconds.value = job.result.simulationTimeSeconds
+      } else {
+        scheduleReplayPoll(id)
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'REPLAY_QUEUE_FULL') {
+        playbackPrecision.value = 'ERROR'
+        historyError.value = '精确重建队列已满，请稍后重试。'
+      } else if (error instanceof ApiError) {
+        playbackPrecision.value = 'ERROR'
+        historyError.value = error.message
+      } else {
+        playbackPrecision.value = 'ERROR'
+        historyError.value = '精确重建请求失败。'
+      }
+    }
+  }
+
+  /** 事件定位：优先 closestStep，缺失时使用 step。 */
+  async function locateEvent(id: string, event: SimulationEvent): Promise<void> {
+    const target = event.closestStep ?? event.step
+    selectedEventId.value = event.eventId ?? `seq-${event.sequence}`
+    await enterReview(id, target)
+  }
+
+  /** 进入回看：冻结游标、请求精确步并填充 focus 缓存。 */
+  async function enterReview(id: string, targetStep: number): Promise<void> {
+    const experiment = current.value
+    if (!experiment) return
+    playbackMode.value = 'REVIEW_PAUSED'
+    stopReviewTicker()
+    cursorStep.value = Math.max(0, Math.floor(targetStep))
+    cursorTimeSeconds.value = cursorStep.value * experiment.config.timeStepSeconds
+    scheduleFocusRange(id, cursorStep.value)
+    await requestExactStep(id, cursorStep.value)
+  }
+
+  /** 游标进入最新权威步一个积分步以内时自动返回 LIVE。 */
+  function maybeAutoReturnToLive(): boolean {
+    const latest = liveState.value?.step ?? current.value?.progress.step ?? Number.POSITIVE_INFINITY
+    if (playbackMode.value !== 'LIVE' && cursorStep.value >= latest - 1) {
+      const id = current.value?.id
+      stopReplayPolling()
+      stopReviewTicker()
+      if (id) void deleteOwnedReplayJob(id)
+      playbackMode.value = 'LIVE'
+      playbackPrecision.value = 'EXACT'
+      selectedEventId.value = null
+      activeReplayJob.value = null
+      return true
+    }
+    return false
+  }
+
+  /** pointerdown 进入回看并冻结游标；只查缓存，不发请求。 */
+  function beginReviewScrub(step: number): void {
+    if (playbackMode.value === 'LIVE') {
+      playbackMode.value = 'REVIEW_PAUSED'
+    }
+    stopReviewTicker()
+    seekCursorFromCache(step)
+  }
+
+  /** pointermove 合帧后只查缓存更新游标，不发请求、不触发精确重建。 */
+  function seekCursorFromCache(step: number): void {
+    if (playbackMode.value === 'LIVE') return
+    const bounded = Math.max(0, Math.floor(step))
+    cursorStep.value = bounded
+    if (maybeAutoReturnToLive()) return
+    const point = playbackBufferRef.value?.interpolateAt(bounded)
+    cursorTimeSeconds.value = point?.simulationTimeSeconds ?? cursorTimeSeconds.value
+    playbackPrecision.value = point?.approximate ? 'APPROXIMATE' : playbackPrecision.value
+  }
+
+  /** 单击跳转：总范围 1%，至少一步。 */
+  function jumpByPercent(direction: -1 | 1): void {
+    const upper = availableToStep.value ?? cursorStep.value
+    const lower = availableFromStep.value ?? 0
+    const range = Math.max(1, plannedEndStep.value)
+    const delta = Math.max(1, Math.ceil(range * 0.01))
+    const target = cursorStep.value + direction * delta
+    cursorStep.value = Math.min(upper, Math.max(lower, target))
+    cursorTimeSeconds.value =
+      (playbackBufferRef.value?.interpolateAt(cursorStep.value)?.simulationTimeSeconds) ??
+      cursorTimeSeconds.value
+  }
+
+  function startReviewPlayback(): void {
+    if (playbackMode.value === 'LIVE') return
+    playbackMode.value = 'REVIEW_PLAYING'
+    stopReviewTicker()
+    reviewTickTimer = setInterval(() => {
+      const upper = availableToStep.value ?? cursorStep.value
+      const lower = availableFromStep.value ?? 0
+      const range = Math.max(1, upper - lower)
+      const perSecond = Math.max(1, Math.ceil(range * REVIEW_RATE_PER_SECOND))
+      const delta = Math.max(1, Math.round((perSecond * REVIEW_TICK_MS) / 1000))
+      const target = Math.min(upper, cursorStep.value + delta)
+      cursorStep.value = target
+      cursorTimeSeconds.value =
+        playbackBufferRef.value?.interpolateAt(target)?.simulationTimeSeconds ?? cursorTimeSeconds.value
+      if (target >= upper) {
+        playbackMode.value = 'REVIEW_PAUSED'
+        stopReviewTicker()
+      }
+    }, REVIEW_TICK_MS)
+  }
+
+  function pauseReviewPlayback(): void {
+    if (playbackMode.value === 'REVIEW_PLAYING') playbackMode.value = 'REVIEW_PAUSED'
+    stopReviewTicker()
+  }
+
+  function stopReviewTicker(): void {
+    if (reviewTickTimer !== null) {
+      clearInterval(reviewTickTimer)
+      reviewTickTimer = null
+    }
+  }
+
+  /** 返回实时：取消回放任务、清除选中历史态，恢复 SnapshotBuffer 展示。 */
+  function returnToLive(): void {
+    const id = current.value?.id
+    stopReplayPolling()
+    stopReviewTicker()
+    if (id) void deleteOwnedReplayJob(id)
+    playbackMode.value = 'LIVE'
+    playbackPrecision.value = 'EXACT'
+    selectedEventId.value = null
+    historyError.value = null
+    activeReplayJob.value = null
+  }
+
+  /** 切换实验、重启或删除前统一取消任务并清空历史状态。 */
+  function cancelReplayAndCleanup(): void {
+    const id = current.value?.id
+    stopReplayPolling()
+    stopReviewTicker()
+    clearHistoryDebounce()
+    historyAbort?.abort()
+    historyAbort = null
+    if (id) void deleteOwnedReplayJob(id)
+    activeReplayJob.value = null
   }
 
   function connect(id: string): void {
@@ -193,6 +637,8 @@ export const useExperimentsStore = defineStore('experiments', () => {
           if (resyncing) return
           let changed = false
           for (const point of payload.points) {
+            // 回放 live 层也摄入实时轨迹，供回看拖动显示。
+            playbackBufferRef.value?.appendLive([snapshotToState(point)])
             for (const body of point.bodies) {
               changed = pushTrailPoint(
                 body.id,
@@ -228,9 +674,14 @@ export const useExperimentsStore = defineStore('experiments', () => {
           // 状态变化会影响队列顺序与按钮可用性，刷新列表。
           void loadList()
         },
-        onNearEncounter: (payload) => {
+        onNearEncounter: (event: SimulationEvent) => {
           if (resyncing) return
-          encounterAlerts.value = [...encounterAlerts.value, payload].slice(-20)
+          upsertEvent(event)
+          pushEncounterAlert(event)
+        },
+        onDiagnostic: (event: SimulationEvent) => {
+          if (resyncing) return
+          upsertEvent(event)
         },
         onError: (payload) => {
           actionError.value = payload.message
@@ -248,8 +699,8 @@ export const useExperimentsStore = defineStore('experiments', () => {
     resyncing = false
   }
 
-  function dismissEncounter(index: number): void {
-    encounterAlerts.value = encounterAlerts.value.filter((_, i) => i !== index)
+  function dismissEncounter(key: string): void {
+    encounterAlerts.value = encounterAlerts.value.filter((item) => item.key !== key)
   }
 
   async function createExperiment(config: SimulationConfig, name?: string): Promise<Experiment | null> {
@@ -282,6 +733,12 @@ export const useExperimentsStore = defineStore('experiments', () => {
       }
       if (action === 'RESTART' && current.value?.id === experimentId) {
         resetLiveBuffers()
+        cancelReplayAndCleanup()
+        clearPlaybackState()
+        playbackBufferRef.value = markRaw(
+          new PlaybackBuffer(updated.config.bodies.map((b) => b.id ?? b.name)),
+        )
+        void loadHistoryOverview(experimentId)
       }
       await loadList()
       return true
@@ -345,8 +802,10 @@ export const useExperimentsStore = defineStore('experiments', () => {
     try {
       const result = await api.deleteExperiment(id)
       if (current.value?.id === id) {
+        cancelReplayAndCleanup()
         current.value = null
         resetLiveBuffers()
+        clearPlaybackState()
         disconnect()
       }
       await loadList()
@@ -376,6 +835,22 @@ export const useExperimentsStore = defineStore('experiments', () => {
     trails,
     snapshotBuffer,
     trailVersion,
+    playbackBufferRef,
+    playbackMode,
+    playbackPrecision,
+    cursorStep,
+    cursorTimeSeconds,
+    selectedEventId,
+    historyLoading,
+    historyError,
+    activeReplayJob,
+    availableFromStep,
+    availableToStep,
+    archiveSampleStride,
+    plannedEndStep,
+    isReviewing,
+    displayState,
+    trailCutoffStep,
     queued,
     running,
     totalStorageBytes,
@@ -393,5 +868,30 @@ export const useExperimentsStore = defineStore('experiments', () => {
     reorderQueue,
     deleteExperiment,
     resetLiveBuffers,
+    upsertEvent,
+    loadHistoryOverview,
+    loadFocusRange,
+    scheduleFocusRange,
+    requestExactStep,
+    locateEvent,
+    enterReview,
+    seekCursorFromCache,
+    beginReviewScrub,
+    maybeAutoReturnToLive,
+    jumpByPercent,
+    startReviewPlayback,
+    pauseReviewPlayback,
+    returnToLive,
+    cancelReplayAndCleanup,
+    clearPlaybackState,
   }
 })
+
+/** PlaybackBuffer 插值点转回契约 SimulationState，供 Canvas 显示。 */
+function interpolatedToState(point: InterpolatedPoint): SimulationState {
+  return {
+    step: point.step,
+    simulationTimeSeconds: point.simulationTimeSeconds,
+    bodies: point.bodies,
+  }
+}

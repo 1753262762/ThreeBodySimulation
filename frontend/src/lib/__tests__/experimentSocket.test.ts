@@ -1,4 +1,4 @@
-﻿import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ExperimentSocket, snapshotToState, type SnapshotPayload } from '../experimentSocket'
 
 class FakeSocket {
@@ -130,5 +130,150 @@ describe('ExperimentSocket 契约行为', () => {
     const state = snapshotToState(payload)
     expect(state.step).toBe(5)
     expect(state.bodies[0].position).toEqual({ x: 1, y: 2, z: 3 })
+  })
+})
+
+describe('ExperimentSocket 1.0/1.1 事件兼容（F4）', () => {
+  it('1.1 NEAR_ENCOUNTER 的 { event } payload 原样交给 onNearEncounter', () => {
+    FakeSocket.instances = []
+    const received: unknown[] = []
+    const socket = new ExperimentSocket(
+      'exp-1',
+      { onNearEncounter: (event) => received.push(event) },
+      { socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket },
+    )
+    socket.connect()
+    const fake = FakeSocket.instances[0]
+    fake.emitOpen()
+    const event = {
+      sequence: 7,
+      eventId: 'aaaaaaaa-0000-4000-8000-000000000001',
+      type: 'NEAR_ENCOUNTER',
+      phase: 'UPDATE',
+      step: 10,
+      simulationTimeSeconds: 100,
+      timestamp: new Date().toISOString(),
+      message: '更新最近点',
+      bodyIds: ['a', 'b'],
+      closestDistanceMeters: 5e7,
+      closestStep: 10,
+      midpointPosition: { x: 1, y: 2, z: 3 },
+    }
+    fake.emitMessage(envelope(5, 'NEAR_ENCOUNTER', { event }))
+    expect(received).toEqual([event])
+    socket.close()
+  })
+
+  it('1.0 NEAR_ENCOUNTER 旧 payload 转换为缺少 eventId/中点的兼容事件', () => {
+    FakeSocket.instances = []
+    const received: unknown[] = []
+    const socket = new ExperimentSocket(
+      'exp-1',
+      { onNearEncounter: (event) => received.push(event) },
+      { socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket },
+    )
+    socket.connect()
+    const fake = FakeSocket.instances[0]
+    fake.emitOpen()
+    fake.emitMessage(
+      envelope(5, 'NEAR_ENCOUNTER', {
+        step: 9,
+        simulationTimeSeconds: 90,
+        bodyIds: ['a', 'b'],
+        distanceMeters: 6e7,
+        thresholdMeters: 5e8,
+        message: '近遇',
+      }),
+    )
+    const converted = received[0] as Record<string, unknown>
+    expect(converted.eventId).toBeNull()
+    expect(converted.phase).toBeUndefined()
+    expect(converted.step).toBe(9)
+    expect(converted.distanceMeters).toBe(6e7)
+    expect(converted.thresholdMeters).toBe(5e8)
+    expect(converted.closestDistanceMeters).toBeNull()
+    expect(converted.midpointPosition).toBeUndefined()
+    socket.close()
+  })
+
+  it('1.1 DIAGNOSTIC 的 { event } payload 交给 onDiagnostic', () => {
+    FakeSocket.instances = []
+    const received: unknown[] = []
+    const socket = new ExperimentSocket(
+      'exp-1',
+      { onDiagnostic: (event) => received.push(event) },
+      { socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket },
+    )
+    socket.connect()
+    const fake = FakeSocket.instances[0]
+    fake.emitOpen()
+    const event = {
+      sequence: 8,
+      eventId: 'bbbbbbbb-0000-4000-8000-000000000001',
+      type: 'DIAGNOSTIC',
+      phase: 'FINAL',
+      step: 20,
+      simulationTimeSeconds: 200,
+      timestamp: new Date().toISOString(),
+      message: '能量漂移',
+      diagnostic: {
+        code: 'ENERGY_DRIFT',
+        severity: 'WARNING',
+        causeCategory: 'NUMERICAL_ERROR',
+        summary: '漂移',
+        likelyCauses: [],
+        evidence: {},
+        recommendations: [],
+      },
+    }
+    fake.emitMessage(envelope(6, 'DIAGNOSTIC', { event }))
+    expect(received).toEqual([event])
+    socket.close()
+  })
+
+  it('DIAGNOSTIC 缺少 event 字段触发协议违规但不影响后续消息', () => {
+    FakeSocket.instances = []
+    const violations: string[] = []
+    const diagnostics: unknown[] = []
+    const snapshots: number[] = []
+    const socket = new ExperimentSocket(
+      'exp-1',
+      {
+        onProtocolViolation: (reason) => violations.push(reason),
+        onDiagnostic: (event) => diagnostics.push(event),
+        onSnapshot: (payload) => snapshots.push(payload.step),
+      },
+      { socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket },
+    )
+    socket.connect()
+    const fake = FakeSocket.instances[0]
+    fake.emitOpen()
+    fake.emitMessage(envelope(7, 'DIAGNOSTIC', { step: 1 }))
+    fake.emitMessage(envelope(8, 'SNAPSHOT', { step: 5, simulationTimeSeconds: 0, bodies: [] }))
+    expect(violations.length).toBe(1)
+    expect(diagnostics).toEqual([])
+    expect(snapshots).toEqual([5])
+    socket.close()
+  })
+
+  it('未知消息类型只记录一次开发日志并安全忽略', () => {
+    FakeSocket.instances = []
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const snapshots: number[] = []
+    const socket = new ExperimentSocket(
+      'exp-1',
+      { onSnapshot: (payload) => snapshots.push(payload.step) },
+      { socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket },
+    )
+    socket.connect()
+    const fake = FakeSocket.instances[0]
+    fake.emitOpen()
+    fake.emitMessage(envelope(9, 'FUTURE_TYPE', { any: true }))
+    fake.emitMessage(envelope(9, 'FUTURE_TYPE', { any: true }))
+    fake.emitMessage(envelope(10, 'SNAPSHOT', { step: 6, simulationTimeSeconds: 0, bodies: [] }))
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(snapshots).toEqual([6])
+    warn.mockRestore()
+    socket.close()
   })
 })

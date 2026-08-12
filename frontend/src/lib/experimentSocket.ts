@@ -6,13 +6,23 @@
  * - 断线使用带上限的指数退避重连。
  * - 重连成功后先由调用方通过 REST 获取全量状态，再接受序列号更大的增量消息，
  *   期间通过 onResync 回调通知上层暂停增量应用。
+ * - 升级期同时接受 1.0 与 1.1：1.1 的 NEAR_ENCOUNTER/DIAGNOSTIC payload 为
+ *   { event: SimulationEvent }，1.0 近遇在适配层转换为缺少 eventId/中点的兼容事件。
+ * - 未识别的新消息类型记录一次开发日志并安全忽略，不能断开连接。
  */
-import type { Metrics, SimulationState, Vector3 } from '../contracts'
+import type { Metrics, SimulationEvent, SimulationState, Vector3 } from '../contracts'
 
-export type WsEventType = 'SNAPSHOT' | 'TRAJECTORY' | 'METRICS' | 'STATUS' | 'NEAR_ENCOUNTER' | 'ERROR'
+export type WsEventType =
+  | 'SNAPSHOT'
+  | 'TRAJECTORY'
+  | 'METRICS'
+  | 'STATUS'
+  | 'NEAR_ENCOUNTER'
+  | 'DIAGNOSTIC'
+  | 'ERROR'
 
 export interface WsEnvelope<TPayload = unknown> {
-  schemaVersion: '1.0'
+  schemaVersion: '1.0' | '1.1'
   type: WsEventType
   experimentId: string
   sequence: number
@@ -61,7 +71,13 @@ export interface StatusPayload {
   message?: string | null
 }
 
-export interface NearEncounterPayload {
+/** 1.1 近遇/诊断统一 payload：携带完整逻辑事件。 */
+export interface EventPayload {
+  event: SimulationEvent
+}
+
+/** 1.0 近遇旧 payload：没有 eventId、phase 与真实最近点。 */
+export interface NearEncounterV1Payload {
   step: number
   simulationTimeSeconds: number
   bodyIds: string[]
@@ -69,6 +85,8 @@ export interface NearEncounterPayload {
   thresholdMeters: number
   message?: string | null
 }
+
+export type NearEncounterPayload = EventPayload | NearEncounterV1Payload
 
 export interface ErrorPayload {
   code: string
@@ -84,7 +102,10 @@ export interface ExperimentSocketHandlers {
   onTrajectory?: (payload: TrajectoryPayload, envelope: WsEnvelope<TrajectoryPayload>) => void
   onMetrics?: (payload: MetricsPayload, envelope: WsEnvelope<MetricsPayload>) => void
   onStatus?: (payload: StatusPayload, envelope: WsEnvelope<StatusPayload>) => void
-  onNearEncounter?: (payload: NearEncounterPayload, envelope: WsEnvelope<NearEncounterPayload>) => void
+  /** 近遇事件（1.0/1.1 均归一化为 SimulationEvent）。 */
+  onNearEncounter?: (event: SimulationEvent, envelope: WsEnvelope) => void
+  /** 1.1 诊断事件，payload 固定为 { event }。 */
+  onDiagnostic?: (event: SimulationEvent, envelope: WsEnvelope) => void
   onError?: (payload: ErrorPayload, envelope: WsEnvelope<ErrorPayload>) => void
   onConnectionState?: (state: ConnectionState) => void
   /** 重连成功后触发，调用方必须重新拉取 REST 全量状态。 */
@@ -118,7 +139,7 @@ function isEnvelope(value: unknown): value is WsEnvelope {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Record<string, unknown>
   return (
-    candidate.schemaVersion === '1.0' &&
+    (candidate.schemaVersion === '1.0' || candidate.schemaVersion === '1.1') &&
     typeof candidate.type === 'string' &&
     typeof candidate.experimentId === 'string' &&
     typeof candidate.sequence === 'number' &&
@@ -128,6 +149,44 @@ function isEnvelope(value: unknown): value is WsEnvelope {
     candidate.payload !== null
   )
 }
+
+function isEventPayload(payload: unknown): payload is EventPayload {
+  if (typeof payload !== 'object' || payload === null) return false
+  const candidate = payload as Record<string, unknown>
+  return typeof candidate.event === 'object' && candidate.event !== null
+}
+
+/** 1.0 近遇载荷转换为缺少 eventId/中点的兼容事件。 */
+export function nearEncounterV1ToEvent(payload: NearEncounterV1Payload, envelope: WsEnvelope): SimulationEvent {
+  return {
+    sequence: envelope.sequence,
+    eventId: null,
+    type: 'NEAR_ENCOUNTER',
+    step: payload.step,
+    simulationTimeSeconds: payload.simulationTimeSeconds,
+    timestamp: envelope.timestamp,
+    message: payload.message ?? '天体距离低于阈值。',
+    bodyIds: payload.bodyIds,
+    distanceMeters: payload.distanceMeters,
+    thresholdMeters: payload.thresholdMeters,
+    triggerDistanceMeters: null,
+    closestDistanceMeters: null,
+    closestStep: null,
+    closestSimulationTimeSeconds: null,
+  }
+}
+
+/** 把任意版本近遇载荷归一化为 SimulationEvent。 */
+export function normalizeNearEncounter(
+  payload: NearEncounterPayload,
+  envelope: WsEnvelope,
+): SimulationEvent {
+  if (isEventPayload(payload)) return payload.event
+  return nearEncounterV1ToEvent(payload as NearEncounterV1Payload, envelope)
+}
+
+/** 已记录过开发日志的未知类型，避免刷屏。 */
+const loggedUnknownTypes = new Set<string>()
 
 export class ExperimentSocket {
   private socket: WebSocket | null = null
@@ -269,15 +328,28 @@ export class ExperimentSocket {
         return
       case 'NEAR_ENCOUNTER':
         this.handlers.onNearEncounter?.(
-          envelope.payload as NearEncounterPayload,
-          envelope as WsEnvelope<NearEncounterPayload>,
+          normalizeNearEncounter(envelope.payload as NearEncounterPayload, envelope),
+          envelope,
         )
+        return
+      case 'DIAGNOSTIC':
+        if (isEventPayload(envelope.payload)) {
+          this.handlers.onDiagnostic?.(envelope.payload.event, envelope)
+        } else {
+          // 诊断没有 1.0 旧格式，不符合契约时安全忽略。
+          this.handlers.onProtocolViolation?.('DIAGNOSTIC 载荷缺少 event 字段', envelope)
+        }
         return
       case 'ERROR':
         this.handlers.onError?.(envelope.payload as ErrorPayload, envelope as WsEnvelope<ErrorPayload>)
         return
-      default:
-        this.handlers.onProtocolViolation?.('未知消息类型', envelope)
+      default: {
+        // 升级期可能出现的新消息类型：记录一次开发日志并安全忽略，不断开连接。
+        if (!loggedUnknownTypes.has(envelope.type)) {
+          loggedUnknownTypes.add(envelope.type)
+          console.warn(`[experimentSocket] 忽略未知 WS 消息类型: ${envelope.type}`)
+        }
+      }
     }
   }
 

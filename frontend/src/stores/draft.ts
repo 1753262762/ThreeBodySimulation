@@ -3,9 +3,15 @@
  *
  * 职责：维护当前编辑中的配置草稿、服务端校验结果，以及导入导出。
  * 草稿只在"应用并重新计算"时提交，符合交付计划的草稿语义。
+ *
+ * 校验语义：
+ * - 本地 canSubmit 只由当前本地 ERROR 与提交中状态决定，旧服务端 ERROR 不锁死按钮；
+ * - 任一草稿变化清空 serverValidation、校验错误、Warning 确认与已校验指纹；
+ * - validateWithServer 返回完整 ValidationResult | null；
+ * - Warning 需用户显式确认后才允许创建（warningsConfirmed 随配置指纹失效）。
  */
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Preset, SimulationConfig, ValidationIssue, ValidationResult } from '../contracts'
 import { ApiError, api } from '../lib/apiClient'
 import {
@@ -52,6 +58,13 @@ const FALLBACK_CONFIG: SimulationConfig = {
   targetSimulationTimeSeconds: null,
 }
 
+function stripRowIds(draft: ConfigDraft): unknown {
+  return {
+    ...draft,
+    bodies: draft.bodies.map(({ rowId: _rowId, ...rest }) => rest),
+  }
+}
+
 export const useDraftStore = defineStore('draft', () => {
   const presets = ref<Preset[]>([])
   const presetsLoading = ref(false)
@@ -64,6 +77,12 @@ export const useDraftStore = defineStore('draft', () => {
   const serverValidation = ref<ValidationResult | null>(null)
   const validating = ref(false)
   const validationError = ref<string | null>(null)
+  /** 创建请求独立 pending，防止双击重复创建。 */
+  const creating = ref(false)
+  /** Warning 确认：草稿变化或配置指纹变化后失效。 */
+  const warningsConfirmed = ref(false)
+  /** 最近一次服务端校验对应的配置指纹。 */
+  const validatedFingerprint = ref<string | null>(null)
 
   /** 本地即时校验，输入过程中给出反馈。 */
   const localConversion = computed(() => draftToConfig(draft.value, unitSystem.value))
@@ -79,7 +98,16 @@ export const useDraftStore = defineStore('draft', () => {
   const errorIssues = computed(() => allIssues.value.filter((item) => item.severity === 'ERROR'))
   const warningIssues = computed(() => allIssues.value.filter((item) => item.severity === 'WARNING'))
 
-  const canSubmit = computed(() => localConversion.value.config !== null && errorIssues.value.length === 0)
+  /** 配置指纹：优先用规范化配置，配置不可用（含本地 ERROR）时退化为去 rowId 的草稿。 */
+  const configFingerprint = computed(() => {
+    const config = localConversion.value.config
+    return config ? JSON.stringify(config) : JSON.stringify(stripRowIds(draft.value))
+  })
+
+  /** 本地 canSubmit 只由本地 ERROR 与提交中状态决定，旧服务端 ERROR 不锁死按钮。 */
+  const canSubmit = computed(
+    () => localConversion.value.config !== null && errorIssues.value.length === 0 && !creating.value,
+  )
 
   const isDirty = computed(() => {
     if (!appliedConfig.value) return true
@@ -98,6 +126,14 @@ export const useDraftStore = defineStore('draft', () => {
     return map
   })
 
+  /** 任一草稿变化：清空服务端校验结果、校验错误、Warning 确认与已校验指纹。 */
+  watch(configFingerprint, () => {
+    serverValidation.value = null
+    validationError.value = null
+    warningsConfirmed.value = false
+    validatedFingerprint.value = null
+  })
+
   function setUnitSystem(system: UnitSystem): void {
     if (system === unitSystem.value) return
     draft.value = convertDraftUnits(draft.value, unitSystem.value, system)
@@ -108,6 +144,8 @@ export const useDraftStore = defineStore('draft', () => {
     draft.value = configToDraft(config, unitSystem.value)
     serverValidation.value = null
     validationError.value = null
+    warningsConfirmed.value = false
+    validatedFingerprint.value = null
     if (markApplied) {
       appliedConfig.value = JSON.parse(JSON.stringify(config)) as SimulationConfig
     }
@@ -158,19 +196,24 @@ export const useDraftStore = defineStore('draft', () => {
     }
   }
 
-  /** 提交前调用服务端校验，返回是否可以继续创建实验。 */
-  async function validateWithServer(): Promise<boolean> {
+  /**
+   * 提交前调用服务端校验，返回完整结果。
+   * 返回 null 表示本地配置不可用或校验请求失败（validationError 已记录）。
+   */
+  async function validateWithServer(): Promise<ValidationResult | null> {
     const config = localConversion.value.config
-    if (!config) return false
+    if (!config) return null
     validating.value = true
     validationError.value = null
     try {
       const result = await api.validateConfig(config)
       serverValidation.value = result
-      return result.valid
+      validatedFingerprint.value = configFingerprint.value
+      return result
     } catch (error) {
       validationError.value = error instanceof ApiError ? error.message : '校验请求失败。'
-      return false
+      serverValidation.value = null
+      return null
     } finally {
       validating.value = false
     }
@@ -184,6 +227,22 @@ export const useDraftStore = defineStore('draft', () => {
     if (appliedConfig.value) {
       loadConfig(appliedConfig.value)
     }
+  }
+
+  function confirmWarnings(): void {
+    warningsConfirmed.value = true
+  }
+
+  function dismissWarnings(): void {
+    warningsConfirmed.value = false
+  }
+
+  function beginCreate(): void {
+    creating.value = true
+  }
+
+  function endCreate(): void {
+    creating.value = false
   }
 
   /** 导入 JSON：接受完整配置文档或 { config: ... } 包装。 */
@@ -239,6 +298,10 @@ export const useDraftStore = defineStore('draft', () => {
     serverValidation,
     validating,
     validationError,
+    creating,
+    warningsConfirmed,
+    validatedFingerprint,
+    configFingerprint,
     localIssues,
     allIssues,
     errorIssues,
@@ -258,6 +321,10 @@ export const useDraftStore = defineStore('draft', () => {
     validateWithServer,
     markApplied,
     resetToApplied,
+    confirmWarnings,
+    dismissWarnings,
+    beginCreate,
+    endCreate,
     importFromJson,
     exportToJson,
   }

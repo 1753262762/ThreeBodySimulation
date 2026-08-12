@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import type { SimulationState } from '../contracts'
-import type { ProjectionPlane } from '../stores/preferences'
+import type { SimulationEvent, SimulationState } from '../contracts'
+import type { CameraMode, ProjectionPlane } from '../stores/preferences'
+import type { CanvasPalette } from '../lib/theme'
+import type { HoverBodyInfo } from '../lib/canvasHover'
 import { formatScientific } from '../lib/format'
 import { SnapshotBuffer } from '../lib/snapshotBuffer'
 import { BodyTrajectoryBuffer, TrajectoryBuffer } from '../lib/trajectoryBuffer'
@@ -17,21 +19,59 @@ type TrailCollection = TrajectoryBuffer | LegacyTrailCollection
  *
  * 背景、轨迹和动态天体使用三个独立 Canvas，共享同一套尺寸与视图
  * 变换。轨迹层按自适应频率重建真实点 Path2D，天体层保持高刷新插值。
+ *
+ * 观察模式：
+ * - FREE：滚轮缩放、拖拽平移、双击适应；手动拖拽自动切回 FREE。
+ * - CENTER_OF_MASS / FOLLOW_BODY：只更新平移（平滑接近目标），保留缩放。
+ * - AUTO_FIT：以当前天体与游标前可见轨迹包围盒为目标，20% 边距、12 Hz 节流、迟滞与平滑。
+ *
+ * 轨迹投影只含 scale（不含 offset），平移通过 Canvas transform 复用路径，
+ * 纯跟随平移不重投影 8,000×N 点。
  */
-const props = defineProps<{
-  state: SimulationState | null
-  /** Optional display-only two-frame reader; state remains authoritative. */
-  snapshotBuffer?: SnapshotBuffer | null
-  trailsPerBody: TrailCollection
-  trailVersion: number
-  projection: ProjectionPlane
-  showTrails: boolean
-  showLabels: boolean
-  showGrid: boolean
-  showPerformanceHud?: boolean
-  bodyNames: Map<string, string>
-  bodyColors: Map<string, string>
-  nearestPairIds: string[] | null
+const props = withDefaults(
+  defineProps<{
+    state: SimulationState | null
+    /** Optional display-only two-frame reader; state remains authoritative. */
+    snapshotBuffer?: SnapshotBuffer | null
+    trailsPerBody: TrailCollection
+    trailVersion: number
+    projection: ProjectionPlane
+    showTrails: boolean
+    showLabels: boolean
+    showGrid: boolean
+    showPerformanceHud?: boolean
+    bodyNames: Map<string, string>
+    bodyColors: Map<string, string>
+    /** 天体质量，用于质心跟随与悬停质心距离。 */
+    bodyMasses?: Map<string, number>
+    nearestPairIds: string[] | null
+    cameraMode?: CameraMode
+    followBodyId?: string | null
+    /** 历史轨迹只绘制 step <= trailCutoffStep 的部分，防止泄露未来轨迹。 */
+    trailCutoffStep?: number
+    events?: SimulationEvent[]
+    selectedEventId?: string | null
+    /** 悬停命中仅在暂停/终态/回看暂停时启用。 */
+    hoverEnabled?: boolean
+    palette?: CanvasPalette
+  }>(),
+  {
+    snapshotBuffer: null,
+    showPerformanceHud: false,
+    bodyMasses: () => new Map(),
+    cameraMode: 'FREE',
+    followBodyId: null,
+    trailCutoffStep: Number.POSITIVE_INFINITY,
+    events: () => [],
+    selectedEventId: null,
+    hoverEnabled: false,
+    palette: undefined,
+  },
+)
+
+const emit = defineEmits<{
+  (e: 'camera-mode-change', mode: CameraMode): void
+  (e: 'hover-body', info: HoverBodyInfo | null): void
 }>()
 
 const backgroundCanvasRef = ref<HTMLCanvasElement | null>(null)
@@ -63,6 +103,8 @@ interface CachedTrailPath {
   pointCount: number
   retainedIndices: number[]
   path: Path2D | null
+  /** 投影使用的 scale，用于平移复用路径。 */
+  scale: number
 }
 
 const trailPathCache = new Map<string, CachedTrailPath>()
@@ -70,6 +112,14 @@ const trailPathCache = new Map<string, CachedTrailPath>()
 let cachedHudText = ''
 let cachedHudKey = ''
 let lastHudFormatMs = Number.NEGATIVE_INFINITY
+
+// ---- 相机跟随状态 ----
+let lastAutoFitMs = Number.NEGATIVE_INFINITY
+let autoFitTarget = { scale: 1e-10, offsetX: 0, offsetY: 0 }
+/** 上一次 AUTO_FIT 缩放，用于迟滞判断。 */
+let autoFitLastScale = 1e-10
+/** 悬停命中结果缓存。 */
+let hoverInfo: HoverBodyInfo | null = null
 
 function displayNowMs(): number {
   if (typeof performance !== 'undefined' && Number.isFinite(performance.now())) return performance.now()
@@ -81,6 +131,15 @@ function displayState(atTimeMs = displayNowMs()): SimulationState | null {
 }
 
 const projectionLabel = computed(() => `${props.projection} 投影视图`)
+
+function palette(): CanvasPalette {
+  return props.palette ?? {
+    background: '#05080f',
+    gridLine: 'rgba(111, 137, 168, 0.22)',
+    axisLine: 'rgba(111, 137, 168, 0.5)',
+    hudText: 'rgba(141, 149, 162, 0.85)',
+  }
+}
 
 function invalidateView(): void {
   backgroundDirty = true
@@ -144,26 +203,16 @@ function project(x: number, y: number, z: number): [number, number] {
   }
 }
 
-function projectPoint(x: number, y: number, z: number): [number, number] {
-  switch (props.projection) {
-    case 'XY': return [x, y]
-    case 'XZ': return [x, z]
-    case 'YZ': return [y, z]
-  }
-}
-
 function fitToContent(): void {
-  const state = displayState()
   const canvas = dynamicCanvasRef.value
-  if (!canvas || !state || state.bodies.length === 0) {
-    view.value = { scale: 1e-10, offsetX: 0, offsetY: 0 }
-    invalidateView()
-    return
-  }
-  let minX = Number.POSITIVE_INFINITY, maxX = Number.NEGATIVE_INFINITY
-  let minY = Number.POSITIVE_INFINITY, maxY = Number.NEGATIVE_INFINITY
+  const state = displayState()
+  if (!canvas || !state || state.bodies.length === 0) return
+  let minX = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
   for (const body of state.bodies) {
-    const [sx, sy] = projectPoint(body.position.x, body.position.y, body.position.z)
+    const [sx, sy] = project(body.position.x, body.position.y, body.position.z)
     minX = Math.min(minX, sx); maxX = Math.max(maxX, sx)
     minY = Math.min(minY, sy); maxY = Math.max(maxY, sy)
   }
@@ -178,6 +227,8 @@ function fitToContent(): void {
     offsetX: canvas.width / 2 - centerX * scale,
     offsetY: canvas.height / 2 - centerY * scale,
   }
+  autoFitLastScale = scale
+  autoFitTarget = { scale, offsetX: view.value.offsetX, offsetY: view.value.offsetY }
   invalidateView()
 }
 
@@ -186,7 +237,7 @@ function drawGrid(ctx: CanvasRenderingContext2D): void {
   const canvas = backgroundCanvasRef.value
   if (!canvas) return
   const v = view.value
-  ctx.strokeStyle = 'rgba(143, 163, 189, 0.08)'
+  ctx.strokeStyle = palette().gridLine
   ctx.lineWidth = 1
 
   const targetPixels = 60 * dpr
@@ -233,7 +284,7 @@ function drawGrid(ctx: CanvasRenderingContext2D): void {
   }
   ctx.stroke()
 
-  ctx.strokeStyle = 'rgba(143, 163, 189, 0.35)'
+  ctx.strokeStyle = palette().axisLine
   ctx.lineWidth = 1
   ctx.beginPath()
   const [yAxisX, xAxisY] = projectGridPoint(0, 0, {
@@ -279,28 +330,44 @@ function reusableTrailCache(bodyId: string, requiredPointCount: number): CachedT
     pointCount: 0,
     retainedIndices: [],
     path: null,
+    scale: Number.NaN,
   }
 }
 
-function projectRingTrail(bodyId: string, points: BodyTrajectoryBuffer): CachedTrailPath {
+function projectWorld(horizontal: number, vertical: number, scale: number): [number, number] {
+  return [horizontal * scale, -vertical * scale]
+}
+
+function projectRingTrail(
+  bodyId: string,
+  points: BodyTrajectoryBuffer,
+  cutoffStep: number,
+): CachedTrailPath {
   const cached = reusableTrailCache(bodyId, points.capacity)
-  const coordinates = cached.coordinates
   const v = view.value
+  if (cached.scale === v.scale) return cached
+  const coordinates = cached.coordinates
   const projection = props.projection
-  points.forEachCoordinates((_step, x, y, z, index) => {
+  let written = 0
+  points.forEachCoordinates((step, x, y, z) => {
+    if (step > cutoffStep) return
     const horizontal = projection === 'YZ' ? y : x
     const vertical = projection === 'XY' ? y : z
-    coordinates[index * 2] = horizontal * v.scale + v.offsetX
-    coordinates[index * 2 + 1] = -vertical * v.scale + v.offsetY
+    const [px, py] = projectWorld(horizontal, vertical, v.scale)
+    coordinates[written * 2] = px
+    coordinates[written * 2 + 1] = py
+    written += 1
   })
-  return updateCachedTrailPath(cached, points.pointCount)
+  cached.scale = v.scale
+  return updateCachedTrailPath(cached, written)
 }
 
 function projectLegacyTrail(bodyId: string, points: number[]): CachedTrailPath {
   const pointCount = Math.floor(points.length / 3)
   const cached = reusableTrailCache(bodyId, pointCount)
-  const coordinates = cached.coordinates
   const v = view.value
+  if (cached.scale === v.scale) return cached
+  const coordinates = cached.coordinates
   const projection = props.projection
   for (let index = 0; index < pointCount; index += 1) {
     const coordinateIndex = index * 3
@@ -309,20 +376,23 @@ function projectLegacyTrail(bodyId: string, points: number[]): CachedTrailPath {
     const z = points[coordinateIndex + 2]
     const horizontal = projection === 'YZ' ? y : x
     const vertical = projection === 'XY' ? y : z
-    coordinates[index * 2] = horizontal * v.scale + v.offsetX
-    coordinates[index * 2 + 1] = -vertical * v.scale + v.offsetY
+    const [px, py] = projectWorld(horizontal, vertical, v.scale)
+    coordinates[index * 2] = px
+    coordinates[index * 2 + 1] = py
   }
+  cached.scale = v.scale
   return updateCachedTrailPath(cached, pointCount)
 }
 
 function rebuildTrailPathCache(): void {
   const activeBodyIds = new Set<string>()
+  const cutoff = props.trailCutoffStep
   const cacheOne = (bodyId: string, points: BodyTrajectoryBuffer | number[]): void => {
     activeBodyIds.add(bodyId)
     trailPathCache.set(
       bodyId,
       points instanceof BodyTrajectoryBuffer
-        ? projectRingTrail(bodyId, points)
+        ? projectRingTrail(bodyId, points, cutoff)
         : projectLegacyTrail(bodyId, points),
     )
   }
@@ -354,7 +424,7 @@ function drawBackgroundLayer(): void {
   const canvas = backgroundCanvasRef.value
   if (!ctx || !canvas) return
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-  ctx.fillStyle = '#050a13'
+  ctx.fillStyle = palette().background
   ctx.fillRect(0, 0, canvas.width, canvas.height)
   drawGrid(ctx)
   backgroundDirty = false
@@ -367,6 +437,9 @@ function drawTrailLayer(nowMs: number): void {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   if (props.showTrails) {
     rebuildTrailPathCache()
+    const v = view.value
+    ctx.save()
+    ctx.translate(v.offsetX, v.offsetY)
     ctx.globalAlpha = 0.65
     ctx.lineWidth = 1.2 * dpr
     ctx.lineCap = 'round'
@@ -375,6 +448,7 @@ function drawTrailLayer(nowMs: number): void {
       ctx.strokeStyle = props.bodyColors.get(bodyId) ?? '#ffffff'
       strokeCachedTrail(ctx, cached)
     }
+    ctx.restore()
     ctx.globalAlpha = 1
   } else {
     trailPathCache.clear()
@@ -412,6 +486,75 @@ function drawBodies(ctx: CanvasRenderingContext2D, state: SimulationState): void
   }
 }
 
+/** 事件标记：LIVE 显示活动近遇与选中事件，REVIEW 显示游标附近事件与选中事件。 */
+function drawEventMarkers(ctx: CanvasRenderingContext2D, state: SimulationState): void {
+  const stateById = new Map(state.bodies.map((body) => [body.id, body]))
+  const reviewing = props.trailCutoffStep !== Number.POSITIVE_INFINITY
+  const sampleStride = Math.max(1, Math.abs(view.value.scale) > 0 ? 100 : 1)
+  for (const event of props.events) {
+    if (event.type !== 'NEAR_ENCOUNTER' && event.type !== 'DIAGNOSTIC') continue
+    if (event.phase === 'FINAL' && !reviewing && event.eventId !== props.selectedEventId) continue
+    if (reviewing && event.closestStep !== null && event.closestStep !== undefined) {
+      const distance = Math.abs((event.closestStep ?? event.step) - props.trailCutoffStep)
+      if (distance > sampleStride && event.eventId !== props.selectedEventId) continue
+    }
+    const selected = event.eventId === props.selectedEventId
+    let mid: { x: number; y: number; z: number } | null = event.midpointPosition ?? null
+    if (!mid && event.bodyIds && event.bodyIds.length >= 2) {
+      const a = stateById.get(event.bodyIds[0])
+      const b = stateById.get(event.bodyIds[1])
+      if (a && b) {
+        mid = {
+          x: (a.position.x + b.position.x) / 2,
+          y: (a.position.y + b.position.y) / 2,
+          z: (a.position.z + b.position.z) / 2,
+        }
+      }
+    }
+    if (!mid) continue
+    const [mx, my] = project(mid.x, mid.y, mid.z)
+    const isDiagnostic = event.type === 'DIAGNOSTIC'
+    ctx.save()
+    ctx.globalAlpha = selected ? 1 : 0.55
+    // 天体连接线。
+    if (event.bodyIds && event.bodyIds.length >= 2) {
+      const a = stateById.get(event.bodyIds[0])
+      const b = stateById.get(event.bodyIds[1])
+      if (a && b) {
+        const [ax, ay] = project(a.position.x, a.position.y, a.position.z)
+        const [bx, by] = project(b.position.x, b.position.y, b.position.z)
+        ctx.strokeStyle = selected ? '#35c9a4' : '#ef6a7a'
+        ctx.lineWidth = (selected ? 1.4 : 1) * dpr
+        ctx.setLineDash([4 * dpr, 3 * dpr])
+        ctx.beginPath()
+        ctx.moveTo(ax, ay)
+        ctx.lineTo(bx, by)
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+    }
+    // 警告标记：三角 + 感叹号。
+    const radius = (selected ? 9 : 7) * dpr
+    const color = isDiagnostic ? '#9db8ff' : selected ? '#35c9a4' : '#ef6a7a'
+    ctx.fillStyle = color
+    ctx.strokeStyle = '#0b1220'
+    ctx.lineWidth = 1.2 * dpr
+    ctx.beginPath()
+    ctx.moveTo(mx, my - radius)
+    ctx.lineTo(mx + radius * 0.866, my + radius * 0.5)
+    ctx.lineTo(mx - radius * 0.866, my + radius * 0.5)
+    ctx.closePath()
+    ctx.fill()
+    ctx.stroke()
+    ctx.fillStyle = '#0b1220'
+    ctx.font = `bold ${(selected ? 8 : 7) * dpr}px var(--mono)`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText('!', mx, my + 0.5 * dpr)
+    ctx.restore()
+  }
+}
+
 function drawHud(ctx: CanvasRenderingContext2D, state: SimulationState, nowMs: number): void {
   const canvas = dynamicCanvasRef.value
   if (!canvas) return
@@ -421,7 +564,7 @@ function drawHud(ctx: CanvasRenderingContext2D, state: SimulationState, nowMs: n
     lastHudFormatMs = nowMs
     cachedHudText = `step ${state.step.toLocaleString()}  t=${formatScientific(state.simulationTimeSeconds)} s  scale=${formatScientific(view.value.scale)} px/m`
   }
-  ctx.fillStyle = 'rgba(141, 149, 162, 0.75)'
+  ctx.fillStyle = palette().hudText
   ctx.font = `${10 * dpr}px var(--mono)`
   ctx.textBaseline = 'bottom'
   ctx.fillText(cachedHudText, 10 * dpr, canvas.height - 8 * dpr)
@@ -436,7 +579,7 @@ function drawHud(ctx: CanvasRenderingContext2D, state: SimulationState, nowMs: n
   const recent = stats.recentFrameMs === null ? '--' : stats.recentFrameMs.toFixed(2)
   const snapshotAge = age === null ? '--' : `${Math.round(age)}ms`
   ctx.textBaseline = 'top'
-  ctx.fillStyle = 'rgba(141, 149, 162, 0.9)'
+  ctx.fillStyle = palette().hudText
   ctx.fillText(
     `FPS ${actual}/${stats.targetFps.toFixed(0)} · draw p95 ${p95}ms recent ${recent}ms · snapshot ${snapshotAge} · DPR ${stats.effectiveDpr.toFixed(2)}`,
     10 * dpr,
@@ -444,16 +587,164 @@ function drawHud(ctx: CanvasRenderingContext2D, state: SimulationState, nowMs: n
   )
 }
 
+/** 质量加权质心。 */
+function centerOfMass(state: SimulationState): { x: number; y: number; z: number } | null {
+  let totalMass = 0
+  let cx = 0
+  let cy = 0
+  let cz = 0
+  for (const body of state.bodies) {
+    const mass = props.bodyMasses.get(body.id) ?? 1
+    totalMass += mass
+    cx += body.position.x * mass
+    cy += body.position.y * mass
+    cz += body.position.z * mass
+  }
+  if (totalMass <= 0) return null
+  return { x: cx / totalMass, y: cy / totalMass, z: cz / totalMass }
+}
+
+/** 采样游标前可见轨迹点用于 AUTO_FIT 包围盒，限制单次遍历成本。 */
+function collectBoundsPoints(): Array<{ x: number; y: number; z: number }> {
+  const points: Array<{ x: number; y: number; z: number }> = []
+  const cutoff = props.trailCutoffStep
+  const pushTrail = (buffer: BodyTrajectoryBuffer): void => {
+    const stride = Math.max(1, Math.floor(buffer.pointCount / 2000))
+    let index = 0
+    buffer.forEachCoordinates((step, x, y, z) => {
+      if (step > cutoff) return
+      if (index % stride === 0) points.push({ x, y, z })
+      index += 1
+    })
+  }
+  if (props.trailsPerBody instanceof TrajectoryBuffer) {
+    props.trailsPerBody.forEachBody((_id, buffer) => pushTrail(buffer))
+  } else {
+    for (const [, value] of props.trailsPerBody) {
+      if (value instanceof BodyTrajectoryBuffer) pushTrail(value)
+    }
+  }
+  return points
+}
+
+/** AUTO_FIT：12 Hz 节流计算目标包围盒，20% 边距，迟滞 + 平滑。 */
+function updateAutoFit(nowMs: number): void {
+  const canvas = dynamicCanvasRef.value
+  const state = displayState()
+  if (!canvas || !state || state.bodies.length === 0) return
+  if (nowMs - lastAutoFitMs < 83) return
+  lastAutoFitMs = nowMs
+
+  const boundsPoints = collectBoundsPoints()
+  const candidates = [
+    ...state.bodies.map((body) => body.position),
+    ...boundsPoints,
+  ]
+  if (candidates.length === 0) return
+  let minX = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  let maxY = Number.NEGATIVE_INFINITY
+  for (const p of candidates) {
+    const horizontal = props.projection === 'YZ' ? p.y : p.x
+    const vertical = props.projection === 'XY' ? p.y : p.z
+    minX = Math.min(minX, horizontal); maxX = Math.max(maxX, horizontal)
+    minY = Math.min(minY, vertical); maxY = Math.max(maxY, vertical)
+  }
+  const padding = 0.2
+  const spanX = Math.max(1e-9, maxX - minX)
+  const spanY = Math.max(1e-9, maxY - minY)
+  const centerX = (minX + maxX) / 2
+  const centerY = (minY + maxY) / 2
+  const targetScale = Math.min(
+    canvas.width / (spanX * (1 + padding)),
+    canvas.height / (spanY * (1 + padding)),
+  )
+  // 迟滞：只有天体越出内侧 80% 区域或目标 scale 相差超过 10% 才更新目标。
+  const v = view.value
+  const innerScale = v.scale * 0.8
+  const projectedCenterX = centerX * innerScale + v.offsetX
+  const projectedCenterY = -centerY * innerScale + v.offsetY
+  const escapesInner =
+    projectedCenterX < canvas.width * 0.1 ||
+    projectedCenterX > canvas.width * 0.9 ||
+    projectedCenterY < canvas.height * 0.1 ||
+    projectedCenterY > canvas.height * 0.9
+  const scaleChanged = Math.abs(targetScale - autoFitLastScale) / Math.max(1e-30, autoFitLastScale) > 0.1
+  if (escapesInner || scaleChanged) {
+    const targetOffsetX = canvas.width / 2 - centerX * targetScale
+    const targetOffsetY = canvas.height / 2 - centerY * targetScale
+    autoFitTarget = { scale: targetScale, offsetX: targetOffsetX, offsetY: targetOffsetY }
+    autoFitLastScale = targetScale
+  }
+}
+
+/** 非 FREE 模式的跟随平移目标。 */
+function followTarget(): { scale: number; offsetX: number; offsetY: number } | null {
+  const canvas = dynamicCanvasRef.value
+  const state = displayState()
+  if (!canvas || !state) return null
+  if (props.cameraMode === 'CENTER_OF_MASS') {
+    const com = centerOfMass(state)
+    if (!com) return null
+    const horizontal = props.projection === 'YZ' ? com.y : com.x
+    const vertical = props.projection === 'XY' ? com.y : com.z
+    return {
+      scale: view.value.scale,
+      offsetX: canvas.width / 2 - horizontal * view.value.scale,
+      offsetY: canvas.height / 2 - -vertical * view.value.scale,
+    }
+  }
+  if (props.cameraMode === 'FOLLOW_BODY') {
+    const body = state.bodies.find((item) => item.id === props.followBodyId)
+    if (!body) return null
+    const horizontal = props.projection === 'YZ' ? body.position.y : body.position.x
+    const vertical = props.projection === 'XY' ? body.position.y : body.position.z
+    return {
+      scale: view.value.scale,
+      offsetX: canvas.width / 2 - horizontal * view.value.scale,
+      offsetY: canvas.height / 2 - -vertical * view.value.scale,
+    }
+  }
+  if (props.cameraMode === 'AUTO_FIT') {
+    return { ...autoFitTarget }
+  }
+  return null
+}
+
+function applyFollowSmoothing(): void {
+  if (props.cameraMode === 'FREE') return
+  const target = followTarget()
+  if (!target) return
+  const v = view.value
+  const k = 0.15
+  const next = {
+    scale: v.scale + (target.scale - v.scale) * k,
+    offsetX: v.offsetX + (target.offsetX - v.offsetX) * k,
+    offsetY: v.offsetY + (target.offsetY - v.offsetY) * k,
+  }
+  const changed =
+    Math.abs(next.scale - v.scale) > 1e-30 ||
+    Math.abs(next.offsetX - v.offsetX) > 0.5 ||
+    Math.abs(next.offsetY - v.offsetY) > 0.5
+  if (changed) {
+    view.value = next
+    invalidateView()
+  }
+}
+
 function drawDynamicLayer(nowMs: number): void {
   const ctx = dynamicContext.value
   const canvas = dynamicCanvasRef.value
-  const state = displayState(nowMs)
   if (!ctx || !canvas) return
+  const state = displayState(nowMs)
+  if (!state) return
+  if (props.cameraMode === 'AUTO_FIT') updateAutoFit(nowMs)
+  applyFollowSmoothing()
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-  if (state) {
-    drawBodies(ctx, state)
-    drawHud(ctx, state, nowMs)
-  }
+  drawBodies(ctx, state)
+  drawEventMarkers(ctx, state)
+  drawHud(ctx, state, nowMs)
   dynamicDirty = false
 }
 
@@ -492,6 +783,7 @@ function onWheel(event: WheelEvent): void {
     offsetX: mouseX * dpr - worldX * newScale,
     offsetY: mouseY * dpr - worldY * newScale,
   }
+  // 任意模式滚轮只修改 scale；切回 FREE 语义下用户主动缩放。
   invalidateView()
 }
 
@@ -504,16 +796,65 @@ function onPointerDown(event: PointerEvent): void {
     origOffsetX: view.value.offsetX,
     origOffsetY: view.value.offsetY,
   }
+  // 手动拖拽立即切回自由视角。
+  if (props.cameraMode !== 'FREE') {
+    emit('camera-mode-change', 'FREE')
+  }
 }
 
 function onPointerMove(event: PointerEvent): void {
-  if (!dragging.value.active) return
-  view.value = {
-    ...view.value,
-    offsetX: dragging.value.origOffsetX + (event.clientX - dragging.value.startX) * dpr,
-    offsetY: dragging.value.origOffsetY + (event.clientY - dragging.value.startY) * dpr,
+  if (dragging.value.active) {
+    view.value = {
+      ...view.value,
+      offsetX: dragging.value.origOffsetX + (event.clientX - dragging.value.startX) * dpr,
+      offsetY: dragging.value.origOffsetY + (event.clientY - dragging.value.startY) * dpr,
+    }
+    invalidateView()
+    return
   }
-  invalidateView()
+  if (props.hoverEnabled) {
+    updateHover(event)
+  }
+}
+
+function updateHover(event: PointerEvent): void {
+  const canvas = dynamicCanvasRef.value
+  const state = displayState()
+  if (!canvas || !state) {
+    if (hoverInfo) {
+      hoverInfo = null
+      emit('hover-body', null)
+    }
+    return
+  }
+  const rect = canvas.getBoundingClientRect()
+  const mouseX = (event.clientX - rect.left) * dpr
+  const mouseY = (event.clientY - rect.top) * dpr
+  const hitRadius = Math.max(10 * dpr, 4 * dpr + 4 * dpr)
+  let best: HoverBodyInfo | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const body of state.bodies) {
+    const [sx, sy] = project(body.position.x, body.position.y, body.position.z)
+    const dx = sx - mouseX
+    const dy = sy - mouseY
+    const distance = Math.hypot(dx, dy)
+    if (distance <= hitRadius && distance < bestDistance) {
+      bestDistance = distance
+      best = {
+        bodyId: body.id,
+        bodyState: body,
+        anchorCssX: sx / dpr,
+        anchorCssY: sy / dpr,
+      }
+    }
+  }
+  const changed =
+    (best === null) !== (hoverInfo === null) ||
+    (best !== null && hoverInfo !== null && best.bodyId !== hoverInfo.bodyId)
+  if (changed) {
+    hoverInfo = best
+    emit('hover-body', best)
+  }
 }
 
 function onPointerUp(event: PointerEvent): void {
@@ -565,6 +906,7 @@ onBeforeUnmount(() => {
   if (resizeObserver) resizeObserver.disconnect()
   window.removeEventListener('resize', resize)
   document.removeEventListener('visibilitychange', onVisibilityChange)
+  if (hoverInfo) emit('hover-body', null)
 })
 
 watch(
@@ -588,6 +930,44 @@ watch(() => props.bodyColors, () => {
   invalidateTrails()
   invalidateDynamic()
 })
+watch(() => props.palette, () => {
+  backgroundDirty = true
+  trailDirty = true
+  dynamicDirty = true
+  wake()
+})
+watch(
+  () => props.trailCutoffStep,
+  () => {
+    // 游标变化使可见轨迹范围变化；scale 未变时路径已按 cutoff 重建。
+    trailDirty = true
+    wake()
+  },
+)
+watch(
+  () => [props.cameraMode, props.followBodyId],
+  () => {
+    if (props.cameraMode === 'FOLLOW_BODY' && props.followBodyId) {
+      // 切换到跟随目标时立即对齐，避免从远处滑入。
+      const target = followTarget()
+      if (target) view.value = { ...target }
+    }
+    invalidateDynamic()
+  },
+)
+watch(
+  () => props.events,
+  () => invalidateDynamic(),
+)
+watch(
+  () => props.hoverEnabled,
+  (enabled) => {
+    if (!enabled && hoverInfo) {
+      hoverInfo = null
+      emit('hover-body', null)
+    }
+  },
+)
 
 defineExpose({ fitToContent })
 </script>
@@ -603,6 +983,7 @@ defineExpose({ fitToContent })
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
+      @pointerleave="hoverEnabled && onPointerUp"
       @dblclick="onDoubleClick"
     ></canvas>
     <canvas

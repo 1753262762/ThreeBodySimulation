@@ -15,7 +15,10 @@ import type {
   ExperimentCreateRequest,
   ExperimentStatus,
   ExperimentSummary,
+  HistoryResponse,
   Preset,
+  ReplayJob,
+  ReplayJobCreateRequest,
   ReportData,
   SimulationConfig,
   ValidationIssue,
@@ -222,6 +225,35 @@ export const api = {
       sampleCount: Number.isFinite(count) && count >= 0 ? count : null,
       filename: filenameFromDisposition(response.headers.get('Content-Disposition')) ?? `experiment-${id}-trajectory.csv`,
     }
+  },
+
+  /** 历史范围查询：只读归档切片，支持 AbortSignal 以便拖动期间取消过期请求。 */
+  getHistory(
+    id: string,
+    query: { fromStep?: number; toStep?: number; maxPoints?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<HistoryResponse> {
+    const params = new URLSearchParams()
+    if (query.fromStep !== undefined) params.set('fromStep', String(query.fromStep))
+    if (query.toStep !== undefined) params.set('toStep', String(query.toStep))
+    if (query.maxPoints !== undefined) params.set('maxPoints', String(query.maxPoints))
+    const qs = params.toString()
+    return request<HistoryResponse>(`/experiments/${id}/history${qs ? `?${qs}` : ''}`, { signal })
+  },
+
+  createReplayJob(id: string, targetStep: number): Promise<ReplayJob> {
+    return request<ReplayJob>(`/experiments/${id}/replay-jobs`, {
+      method: 'POST',
+      body: JSON.stringify({ targetStep } satisfies ReplayJobCreateRequest),
+    })
+  },
+
+  getReplayJob(id: string, jobId: string): Promise<ReplayJob> {
+    return request<ReplayJob>(`/experiments/${id}/replay-jobs/${jobId}`)
+  },
+
+  deleteReplayJob(id: string, jobId: string): Promise<void> {
+    return request<void>(`/experiments/${id}/replay-jobs/${jobId}`, { method: 'DELETE' })
   },
 }
 

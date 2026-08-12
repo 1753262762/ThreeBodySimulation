@@ -2,7 +2,6 @@ package com.threebody.app.event;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.EnumMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -127,10 +126,8 @@ public final class AsyncExperimentEventDispatcher implements AutoCloseable {
                     pending.put(message.experimentId(), experiment);
                 }
                 boolean wasEmpty = experiment.isEmpty();
-                if (message.type() == ExperimentMessageType.SNAPSHOT
-                        || message.type() == ExperimentMessageType.METRICS
-                        || message.type() == ExperimentMessageType.TRAJECTORY) {
-                    experiment.latest.put(message.type(), message);
+                if (message.mergeKey() != null) {
+                    experiment.latest.put(message.mergeKey(), message);
                 } else {
                     if (reliableCount >= mailboxCapacity) {
                         // A listener that cannot keep up is isolated and removed;
@@ -208,7 +205,7 @@ public final class AsyncExperimentEventDispatcher implements AutoCloseable {
                 ExperimentMessage candidate = pendingExperiment.lowest();
                 ExperimentMessage latest = pendingExperiment.latestMessage(candidate);
                 if (latest != null) {
-                    pendingExperiment.latest.remove(latest.type());
+                    pendingExperiment.latest.remove(latest.mergeKey());
                 } else {
                     pendingExperiment.reliable.removeFirst();
                     reliableCount--;
@@ -235,8 +232,7 @@ public final class AsyncExperimentEventDispatcher implements AutoCloseable {
 
     private static final class PendingExperiment {
         private final ArrayDeque<ExperimentMessage> reliable = new ArrayDeque<>();
-        private final EnumMap<ExperimentMessageType, ExperimentMessage> latest =
-                new EnumMap<>(ExperimentMessageType.class);
+        private final Map<String, ExperimentMessage> latest = new LinkedHashMap<>();
 
         private ExperimentMessage lowest() {
             ExperimentMessage result = reliable.peekFirst();
@@ -249,7 +245,8 @@ public final class AsyncExperimentEventDispatcher implements AutoCloseable {
         }
 
         private ExperimentMessage latestMessage(ExperimentMessage candidate) {
-            ExperimentMessage latestMessage = latest.get(candidate.type());
+            ExperimentMessage latestMessage = candidate.mergeKey() == null
+                    ? null : latest.get(candidate.mergeKey());
             return latestMessage == candidate ? candidate : null;
         }
 

@@ -17,7 +17,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayDeque;
-import java.util.EnumMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -193,8 +193,7 @@ public class ExperimentWebSocketHandler extends TextWebSocketHandler implements 
         private final WebSocketSession session;
         private final Object lock = new Object();
         private final ArrayDeque<ExperimentMessage> reliable = new ArrayDeque<>();
-        private final EnumMap<ExperimentMessageType, ExperimentMessage> latest =
-                new EnumMap<>(ExperimentMessageType.class);
+        private final Map<String, ExperimentMessage> latest = new LinkedHashMap<>();
         private final AtomicBoolean scheduled = new AtomicBoolean();
         private final AtomicBoolean senderClosed = new AtomicBoolean();
         private final AtomicLong sendGeneration = new AtomicLong();
@@ -209,8 +208,8 @@ public class ExperimentWebSocketHandler extends TextWebSocketHandler implements 
                 if (senderClosed.get() || !session.isOpen()) {
                     return;
                 }
-                if (isLatestType(message.type())) {
-                    latest.put(message.type(), message);
+                if (message.mergeKey() != null) {
+                    latest.put(message.mergeKey(), message);
                 } else {
                     if (pendingCount() >= MAX_PENDING_MESSAGES) {
                         close(true, CloseStatus.POLICY_VIOLATION);
@@ -268,12 +267,12 @@ public class ExperimentWebSocketHandler extends TextWebSocketHandler implements 
             sendStartedAt = System.nanoTime();
             try {
                 Map<String, Object> envelope = new java.util.LinkedHashMap<>();
-                envelope.put("schemaVersion", "1.0");
+                envelope.put("schemaVersion", "1.1");
                 envelope.put("type", message.type().name());
                 envelope.put("experimentId", message.experimentId());
                 envelope.put("sequence", message.sequence());
                 envelope.put("timestamp", message.timestamp().toString());
-                envelope.put("payload", message.payload());
+                envelope.put("payload", wrapPayload(message));
                 String json = mapper.writeValueAsString(envelope);
                 synchronized (session) {
                     if (session.isOpen()) {
@@ -286,6 +285,19 @@ public class ExperimentWebSocketHandler extends TextWebSocketHandler implements 
             } finally {
                 sendGeneration.compareAndSet(generation, 0L);
             }
+        }
+
+        /**
+         * WS 1.1 的 NEAR_ENCOUNTER 与 DIAGNOSTIC payload 统一为 { event: SimulationEvent }。
+         */
+        private Object wrapPayload(ExperimentMessage message) {
+            if (message.type() == ExperimentMessageType.NEAR_ENCOUNTER
+                    || message.type() == ExperimentMessageType.DIAGNOSTIC) {
+                Map<String, Object> wrapped = new java.util.LinkedHashMap<>();
+                wrapped.put("event", message.payload());
+                return wrapped;
+            }
+            return message.payload();
         }
 
         private volatile long sendStartedAt;
@@ -303,7 +315,7 @@ public class ExperimentWebSocketHandler extends TextWebSocketHandler implements 
                 return null;
             }
             if (latestResult != null) {
-                latest.remove(latestResult.type());
+                latest.remove(latestResult.mergeKey());
             } else {
                 reliable.removeFirst();
             }
@@ -318,12 +330,6 @@ public class ExperimentWebSocketHandler extends TextWebSocketHandler implements 
 
         private int pendingCount() {
             return reliable.size() + latest.size();
-        }
-
-        private boolean isLatestType(ExperimentMessageType type) {
-            return type == ExperimentMessageType.SNAPSHOT
-                    || type == ExperimentMessageType.METRICS
-                    || type == ExperimentMessageType.TRAJECTORY;
         }
 
         private void close(boolean closeSession, CloseStatus status) {

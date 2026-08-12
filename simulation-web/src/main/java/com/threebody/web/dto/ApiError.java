@@ -20,5 +20,6 @@ public record ApiError(
         this(code, message, Instant.now(), issues);
     }
 
-    public record ValidationIssueDto(String field, String code, String message, String severity) {}
+    public record ValidationIssueDto(
+            String field, String code, String message, String severity, String riskLevel) {}
 }

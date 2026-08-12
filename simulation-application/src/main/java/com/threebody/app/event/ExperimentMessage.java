@@ -10,11 +10,28 @@ import java.time.Instant;
  * @param sequence      实验内单调递增序号，从 1 开始
  * @param timestamp     服务器时间
  * @param payload       类型化载荷
+ * @param mergeKey      最新值合并键：非 null 的消息按该键最新值覆盖（如 UPDATE 按 eventId）；
+ *                      null 表示可靠有序消息，进入可靠 FIFO
  */
 public record ExperimentMessage(
         ExperimentMessageType type,
         String experimentId,
         long sequence,
         Instant timestamp,
-        Object payload) {
+        Object payload,
+        String mergeKey) {
+
+    public ExperimentMessage {
+        // 兼容旧构造签名：mergeKey 为空时按 SNAPSHOT/TRAJECTORY/METRICS 的既有最新值语义
+        mergeKey = mergeKey != null ? mergeKey
+                : switch (type) {
+                    case SNAPSHOT, TRAJECTORY, METRICS -> type.name();
+                    default -> null;
+                };
+    }
+
+    public ExperimentMessage(ExperimentMessageType type, String experimentId, long sequence,
+            Instant timestamp, Object payload) {
+        this(type, experimentId, sequence, timestamp, payload, null);
+    }
 }

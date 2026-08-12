@@ -121,6 +121,39 @@ public final class Experiment {
         touch();
     }
 
+    /**
+     * 按逻辑事件 upsert：首次 ENTER/一次性诊断追加；UPDATE/FINAL 原位替换同 eventId 记录。
+     * 1,000 条上限按"逻辑事件"计数，不按更新次数计数；达到上限时删除最旧的已定稿事件，
+     * 不删除仍活动的近遇（phase 为 ENTER/UPDATE）。
+     */
+    public synchronized void upsertEvent(SimulationEvent event) {
+        if (event.eventId() != null) {
+            for (int i = 0; i < events.size(); i++) {
+                if (event.eventId().equals(events.get(i).eventId())) {
+                    events.set(i, event);
+                    touch();
+                    return;
+                }
+            }
+        }
+        events.add(event);
+        while (events.size() > 1000) {
+            int evict = oldestFinalizedIndex(events);
+            events.remove(evict < 0 ? 0 : evict);
+        }
+        touch();
+    }
+
+    private static int oldestFinalizedIndex(List<SimulationEvent> list) {
+        for (int i = 0; i < list.size(); i++) {
+            SimulationEvent ev = list.get(i);
+            if (ev.phase() == null || ev.phase() == EventPhase.FINAL) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
     /** 清空事件列表，用于 RESTART。 */
     public synchronized void clearEvents() {
         events.clear();

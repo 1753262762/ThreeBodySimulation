@@ -15,6 +15,7 @@ import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.threebody.app.domain.Experiment;
 import com.threebody.app.service.ExperimentRepository;
+import com.threebody.app.service.HistorySlice;
 import com.threebody.core.BodyState;
 import com.threebody.core.SimulationState;
 import com.threebody.core.Vector3;
@@ -253,6 +254,93 @@ public class FileExperimentRepository implements ExperimentRepository {
             return List.copyOf(states);
         } finally {
             rwLock.writeLock().unlock();
+        }
+    }
+
+    @Override
+    public HistorySlice readTrajectoryRange(String experimentId, long fromStep, long toStep, int maxPoints,
+            long archiveSampleStride) {
+        rwLock.readLock().lock();
+        try {
+            List<SimulationState> all = streamTrajectoryFile(experimentId);
+            Long availableFrom = null;
+            Long availableTo = null;
+            List<SimulationState> inRange = new ArrayList<>();
+            for (SimulationState state : all) {
+                if (availableFrom == null || state.step() < availableFrom) availableFrom = state.step();
+                if (availableTo == null || state.step() > availableTo) availableTo = state.step();
+                if (state.step() >= fromStep && state.step() <= toStep) {
+                    inRange.add(state);
+                }
+            }
+            int limit = Math.max(2, maxPoints);
+            boolean downsampled = inRange.size() > limit;
+            List<SimulationState> points = downsampled ? uniformlySample(inRange, limit) : inRange;
+            return new HistorySlice(points, availableFrom, availableTo,
+                    Math.max(1L, archiveSampleStride), downsampled);
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public java.util.Optional<SimulationState> findTrajectoryAtStep(String experimentId, long targetStep) {
+        rwLock.readLock().lock();
+        try {
+            for (SimulationState state : streamTrajectoryFile(experimentId)) {
+                if (state.step() == targetStep) {
+                    return java.util.Optional.of(state);
+                }
+                if (state.step() > targetStep) {
+                    break;
+                }
+            }
+            return java.util.Optional.empty();
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public java.util.Optional<SimulationState> findTrajectoryAtOrBefore(String experimentId, long targetStep) {
+        rwLock.readLock().lock();
+        try {
+            SimulationState floor = null;
+            for (SimulationState state : streamTrajectoryFile(experimentId)) {
+                if (state.step() > targetStep) {
+                    break;
+                }
+                floor = state;
+            }
+            return floor == null ? java.util.Optional.empty() : java.util.Optional.of(floor);
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    /** JSONL 流式扫描，逐行解析，不加载全量文件到内存。 */
+    private List<SimulationState> streamTrajectoryFile(String experimentId) {
+        Path trajectory = trajectoryPath(experimentId);
+        if (!Files.isRegularFile(trajectory)) {
+            return new ArrayList<>();
+        }
+        List<SimulationState> states = new ArrayList<>();
+        try (java.io.BufferedReader reader = Files.newBufferedReader(trajectory)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                try {
+                    states.add(mapper.readValue(line, TrajectoryPointRecord.class).toSimulationState());
+                } catch (IOException malformed) {
+                    System.err.println("[ThreeBodyLab] skipped malformed trajectory line: "
+                            + malformed.getMessage());
+                }
+            }
+            return states;
+        } catch (IOException e) {
+            throw new UncheckedIOException("trajectory archive stream read failed", e);
         }
     }
 

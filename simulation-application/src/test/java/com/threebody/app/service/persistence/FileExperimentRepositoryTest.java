@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentStatus;
+import com.threebody.app.service.HistorySlice;
 import com.threebody.core.BodySpec;
 import com.threebody.core.BodyState;
 import com.threebody.core.PhysicalConstants;
@@ -373,5 +374,111 @@ class FileExperimentRepositoryTest {
 
         // 5. loadTrajectory 返回空
         assertTrue(repo.loadTrajectory(expId).isEmpty());
+    }
+
+    @Test
+    @DisplayName("历史范围读取返回闭区间、升序、可抽样并保留首尾")
+    void historyRangeRead() throws Exception {
+        String expId = "history-range";
+        repo.save(createTestExperiment(expId, "历史范围测试"));
+        for (int i = 0; i < 50; i++) {
+            repo.appendTrajectoryPoint(expId, createTestState(i, i * 3600.0), 50_000L);
+        }
+
+        HistorySlice slice = repo.readTrajectoryRange(expId, 10L, 40L, 1000, 1L);
+        assertEquals(31, slice.points().size(), "闭区间 10..40 应返回 31 个点");
+        assertEquals(10L, slice.points().get(0).step());
+        assertEquals(40L, slice.points().get(slice.points().size() - 1).step());
+        assertEquals(0L, slice.availableFromStep());
+        assertEquals(49L, slice.availableToStep());
+        assertFalse(slice.downsampled());
+
+        HistorySlice sampled = repo.readTrajectoryRange(expId, 0L, 49L, 10, 1L);
+        assertTrue(sampled.downsampled(), "超过 maxPoints 应抽样");
+        assertTrue(sampled.points().size() <= 10);
+        assertEquals(0L, sampled.points().get(0).step(), "抽样必须保留区间首点");
+        assertEquals(49L, sampled.points().get(sampled.points().size() - 1).step(), "抽样必须保留区间尾点");
+    }
+
+    @Test
+    @DisplayName("精确 step 与 floor 查询定位正确持久化点")
+    void exactAndFloorLookup() throws Exception {
+        String expId = "history-lookup";
+        repo.save(createTestExperiment(expId, "查询测试"));
+        for (int i = 0; i < 20; i++) {
+            repo.appendTrajectoryPoint(expId, createTestState(i * 2L, i * 2.0 * 3600.0), 50_000L);
+        }
+
+        assertTrue(repo.findTrajectoryAtStep(expId, 10L).isPresent(), "步 10 应存在");
+        assertTrue(repo.findTrajectoryAtStep(expId, 11L).isEmpty(), "步 11 应不存在");
+
+        assertTrue(repo.findTrajectoryAtOrBefore(expId, 15L).isPresent());
+        assertEquals(14L, repo.findTrajectoryAtOrBefore(expId, 15L).get().step(), "floor 应为 14");
+
+        assertTrue(repo.findTrajectoryAtOrBefore(expId, 0L).isPresent());
+        assertEquals(0L, repo.findTrajectoryAtOrBefore(expId, 0L).get().step());
+    }
+
+    @Test
+    @DisplayName("旧 manifest 缺少新增事件字段仍可恢复并原子重写")
+    void oldManifestRecoversWithoutNewEventFields() throws Exception {
+        // 模拟 1.0 版本写入的 experiments.json：事件只有旧字段，缺少 eventId/phase/诊断等
+        String oldManifest = """
+                {"experiments":[{"id":"old-exp-1","name":"旧实验","status":"COMPLETED",
+                "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z",
+                "startedAt":null,"completedAt":"2026-01-01T00:00:00Z","endReason":"MAX_STEPS",
+                "config":{"name":"旧配置","bodies":[
+                  {"id":"a","name":"甲","color":"#ffd166","massKg":1.0e30,"position":{"x":0,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}},
+                  {"id":"b","name":"乙","color":"#4d96ff","massKg":1.0e30,"position":{"x":1.0e11,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}}
+                ],"timeStepSeconds":3600,"gravitationalConstant":6.6743e-11,"softeningLengthMeters":1.0e6,
+                "maxSteps":1000,"targetSimulationTimeSeconds":null},
+                "state":null,"metrics":null,
+                "events":[{"sequence":1,"type":"STATUS_CHANGE","step":0,"simulationTimeSeconds":0,
+                  "timestamp":"2026-01-01T00:00:00Z","message":"实验开始运行。","bodyIds":null,"distanceMeters":null}],
+                "trajectoryInfo":{"sampleStride":1,"sampleCount":0,"pointLimit":50000,"liveWindowSize":8000},
+                "lastSequence":1,"errorMessage":null}]}
+                """;
+        Files.writeString(expectedManifest, oldManifest);
+
+        List<Experiment> restored = repo.listAll();
+        assertEquals(1, restored.size(), "旧 manifest 应可恢复");
+        Experiment e = restored.get(0);
+        assertEquals(1, e.events().size());
+        com.threebody.app.domain.SimulationEvent ev = e.events().get(0);
+        assertNull(ev.eventId(), "旧事件缺少 eventId 应恢复为 null");
+        assertNull(ev.phase(), "旧事件缺少 phase 应恢复为 null");
+        assertNull(ev.diagnostic(), "旧事件缺少 diagnostic 应恢复为 null");
+
+        // 修改后原子重写不应丢数据
+        e.setName("已迁移");
+        repo.save(e);
+        List<Experiment> after = repo.listAll();
+        assertEquals("已迁移", after.get(0).name());
+    }
+
+    @Test
+    @DisplayName("旧 NUMERICAL_WARNING 枚举值可读（读取兼容）")
+    void legacyNumericalWarningReadsCompatibility() throws Exception {
+        String manifest = """
+                {"experiments":[{"id":"old-warn","name":"旧告警","status":"COMPLETED",
+                "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z",
+                "startedAt":null,"completedAt":"2026-01-01T00:00:00Z","endReason":"MAX_STEPS",
+                "config":{"name":"旧配置","bodies":[
+                  {"id":"a","name":"甲","color":"#ffd166","massKg":1.0e30,"position":{"x":0,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}},
+                  {"id":"b","name":"乙","color":"#4d96ff","massKg":1.0e30,"position":{"x":1.0e11,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}}
+                ],"timeStepSeconds":3600,"gravitationalConstant":6.6743e-11,"softeningLengthMeters":1.0e6,
+                "maxSteps":1000,"targetSimulationTimeSeconds":null},
+                "state":null,"metrics":null,
+                "events":[{"sequence":1,"type":"NUMERICAL_WARNING","step":5,"simulationTimeSeconds":18000,
+                  "timestamp":"2026-01-01T00:00:00Z","message":"旧数值告警。","bodyIds":null,"distanceMeters":null}],
+                "trajectoryInfo":{"sampleStride":1,"sampleCount":0,"pointLimit":50000,"liveWindowSize":8000},
+                "lastSequence":1,"errorMessage":null}]}
+                """;
+        Files.writeString(expectedManifest, manifest);
+
+        List<Experiment> restored = repo.listAll();
+        assertEquals(1, restored.size());
+        assertEquals(com.threebody.app.domain.SimulationEventType.NUMERICAL_WARNING,
+                restored.get(0).events().get(0).type(), "NUMERICAL_WARNING 应保留读取兼容");
     }
 }

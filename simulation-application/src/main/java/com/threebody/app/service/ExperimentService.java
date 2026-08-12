@@ -1,6 +1,7 @@
 package com.threebody.app.service;
 
 import com.threebody.app.domain.EndReason;
+import com.threebody.app.domain.EventPhase;
 import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentAction;
 import com.threebody.app.domain.ExperimentMetrics;
@@ -46,6 +47,7 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
+import java.util.UUID;
 
 /**
  * 实验调度核心服务：管理队列、状态机、工作线程与事件广播。
@@ -87,6 +89,9 @@ public class ExperimentService implements AutoCloseable {
 
     /** 事件列表上限。 */
     static final int MAX_EVENTS = 1_000;
+
+    /** 近遇 UPDATE 最小发布间隔(ns)，500ms。 */
+    static final long ENCOUNTER_UPDATE_MIN_NANOS = 500_000_000L;
 
     private final ExperimentRepository repository;
     private final MonotonicClock monotonicClock;
@@ -130,8 +135,8 @@ public class ExperimentService implements AutoCloseable {
     /** 用于抽样指标的墙钟计时。 */
     private volatile long lastMetricsWallTime = 0L;
 
-    /** Active near-encounter pairs; events are emitted only on entry edges. */
-    private final Map<String, Double> activeNearEncounters = new LinkedHashMap<>();
+    /** 活动近遇对：pairKey -> ActiveEncounter；事件仅在进入/更新/退出边沿发布。 */
+    private final Map<String, ActiveEncounter> activeEncounters = new LinkedHashMap<>();
 
     public ExperimentService(ExperimentRepository repository) {
         this(repository, (MonotonicClock) System::nanoTime, true);
@@ -214,12 +219,14 @@ public class ExperimentService implements AutoCloseable {
         synchronized (queue) {
             for (Experiment e : experiments.values()) {
                 if (e.status() == ExperimentStatus.RUNNING) {
+                    finalizeActiveEncounters(e, e.state());
                     e.setStatus(ExperimentStatus.PAUSED);
-                    e.addEvent(new SimulationEvent(
-                            nextSequence(e),
-                            SimulationEventType.STATUS_CHANGE,
+                    e.addEvent(SimulationEvent.simple(
+                            nextSequence(e), SimulationEventType.STATUS_CHANGE,
                             e.step(), e.simulationTimeSeconds(), Instant.now(),
-                            "应用关闭，实验暂停。", null, null));
+                            "应用关闭，实验暂停。"));
+                } else {
+                    finalizeActiveEncounters(e, e.state());
                 }
                 try {
                     repository.save(e);
@@ -614,12 +621,13 @@ public class ExperimentService implements AutoCloseable {
         long lastMetricsStep = state.step();
         long stepsSinceSnapshot = 0L;
         long snapshotStepBudget = realtimeSnapshotStepBudget(config);
-        activeNearEncounters.clear();
+        activeEncounters.clear();
 
         try {
             while (true) {
                 // 检查取消
                 if (cancelToken.get()) {
+                    finalizeActiveEncounters(e, e.state());
                     // submitAction publishes the cancellation snapshot.  A
                     // shutdown/cancel race may reach here before it does, so
                     // only publish when the state has not already been finalised.
@@ -635,6 +643,7 @@ public class ExperimentService implements AutoCloseable {
 
                 // 检查暂停
                 if (pauseToken.get()) {
+                    finalizeActiveEncounters(e, e.state());
                     e.setStatus(ExperimentStatus.PAUSED);
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "实验已暂停。"));
                     broadcastStatus(e, ExperimentStatus.PAUSED, ExperimentStatus.RUNNING, "实验已暂停。");
@@ -655,6 +664,7 @@ public class ExperimentService implements AutoCloseable {
                     e.setStatus(ExperimentStatus.FAILED);
                     e.setErrorMessage(ex.getMessage());
                     e.setCompletedAt(Instant.now());
+                    finalizeActiveEncounters(e, state);
                     e.addEvent(makeEvent(e, SimulationEventType.ERROR,
                             "数值不稳定：" + ex.getMessage()));
                     broadcastError(e, "NUMERICAL_INSTABILITY", ex.getMessage(), state.step(), false);
@@ -673,34 +683,59 @@ public class ExperimentService implements AutoCloseable {
                 stepsSinceSnapshot++;
                 offerArchivePoint(e, state, false);
 
-                // 处理近距离事件。核心层每步报告“当前在阈值内”的配对，
-                // 应用层只在进入边沿发布；离开使用 1.25x 阈值迟滞。
+                // 处理近距离事件完整生命周期：
+                // ENTER 首次跨阈值（可靠）；UPDATE 最小距离变化且距上次发布≥500ms（按 eventId 合并）；
+                // FINAL 离开 1.25x 阈值迟滞（可靠），必须携带完整真实最小点。
+                Map<String, String> idToName = nameById(config);
                 Set<String> nearPairsThisStep = new HashSet<>();
                 for (NearEncounter ne : result.nearEncounters()) {
                     String key = nearPairKey(ne.firstBodyId(), ne.secondBodyId());
                     nearPairsThisStep.add(key);
-                    if (!activeNearEncounters.containsKey(key)) {
-                        SimulationEvent ev = new SimulationEvent(
-                                nextSequence(e),
-                                SimulationEventType.NEAR_ENCOUNTER,
+                    ActiveEncounter enc = activeEncounters.get(key);
+                    double distance = ne.distanceMeters();
+                    if (enc == null) {
+                        enc = new ActiveEncounter(
+                                UUID.randomUUID().toString(),
+                                key,
+                                List.of(ne.firstBodyId(), ne.secondBodyId()),
+                                nameOf(idToName, ne.firstBodyId()) + " 与 " + nameOf(idToName, ne.secondBodyId()),
+                                ne.thresholdMeters(),
+                                distance,
+                                distance,
                                 state.step(),
                                 state.simulationTimeSeconds(),
-                                Instant.now(),
-                                "天体 " + ne.firstBodyId() + " 与 " + ne.secondBodyId()
-                                        + " 距离低于 " + String.format("%.2e", ne.thresholdMeters()) + " m。",
-                                List.of(ne.firstBodyId(), ne.secondBodyId()),
-                                ne.distanceMeters());
-                        e.addEvent(ev);
-                        broadcastNearEncounter(e, state, ne);
+                                midpoint(state, ne.firstBodyId(), ne.secondBodyId()),
+                                nextSequence(e));
+                        activeEncounters.put(key, enc);
+                        SimulationEvent ev = encounterEvent(e, enc, EventPhase.ENTER, state);
+                        e.upsertEvent(ev);
+                        publishEncounter(e, enc, ev);
+                    } else {
+                        if (distance < enc.closestDistance) {
+                            enc.closestDistance = distance;
+                            enc.closestStep = state.step();
+                            enc.closestTime = state.simulationTimeSeconds();
+                            enc.closestMidpoint = midpoint(state, ne.firstBodyId(), ne.secondBodyId());
+                        }
+                        long nowNanos = monotonicClock.nanoTime();
+                        if (nowNanos - enc.lastUpdatePublishedAt >= ENCOUNTER_UPDATE_MIN_NANOS) {
+                            SimulationEvent ev = encounterEvent(e, enc, EventPhase.UPDATE, state);
+                            e.upsertEvent(ev);
+                            publishEncounter(e, enc, ev);
+                            enc.lastUpdatePublishedAt = nowNanos;
+                        }
                     }
-                    activeNearEncounters.put(key, ne.thresholdMeters());
                 }
-                Iterator<Map.Entry<String, Double>> nearIterator =
-                        activeNearEncounters.entrySet().iterator();
+                Iterator<Map.Entry<String, ActiveEncounter>> nearIterator =
+                        activeEncounters.entrySet().iterator();
                 while (nearIterator.hasNext()) {
-                    Map.Entry<String, Double> entry = nearIterator.next();
+                    Map.Entry<String, ActiveEncounter> entry = nearIterator.next();
+                    ActiveEncounter enc = entry.getValue();
                     if (!nearPairsThisStep.contains(entry.getKey())
-                            && pairDistance(state, entry.getKey()) > entry.getValue() * 1.25) {
+                            && pairDistance(state, entry.getKey()) > enc.threshold * 1.25) {
+                        SimulationEvent ev = encounterEvent(e, enc, EventPhase.FINAL, state);
+                        e.upsertEvent(ev);
+                        publishEncounter(e, enc, ev);
                         nearIterator.remove();
                     }
                 }
@@ -792,6 +827,7 @@ public class ExperimentService implements AutoCloseable {
                 }
 
                 if (done) {
+                    finalizeActiveEncounters(e, state);
                     e.setStatus(ExperimentStatus.COMPLETED);
                     e.setCompletedAt(Instant.now());
 
@@ -822,6 +858,7 @@ public class ExperimentService implements AutoCloseable {
                 }
 
                 if (singleStep && !cancelToken.get()) {
+                    finalizeActiveEncounters(e, state);
                     e.setStatus(ExperimentStatus.PAUSED);
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "单步完成，实验已暂停。"));
                     broadcastStatus(e, ExperimentStatus.PAUSED, ExperimentStatus.RUNNING,
@@ -839,6 +876,7 @@ public class ExperimentService implements AutoCloseable {
             e.setStatus(ExperimentStatus.FAILED);
             e.setErrorMessage("内部错误：" + ex.getMessage());
             e.setCompletedAt(Instant.now());
+            finalizeActiveEncounters(e, state != null ? state : e.state());
             e.addEvent(makeEvent(e, SimulationEventType.ERROR, "内部错误：" + ex.getMessage()));
             long errorStep = state != null ? state.step() : e.step();
             broadcastError(e, "INTERNAL_ERROR", ex.getMessage(), errorStep, false);
@@ -994,26 +1032,100 @@ public class ExperimentService implements AutoCloseable {
         publish(e, ExperimentMessageType.METRICS, payload);
     }
 
-    private void broadcastNearEncounter(Experiment e, SimulationState state, NearEncounter ne) {
-        NearEncounterPayload payload = new NearEncounterPayload(
-                state.step(), state.simulationTimeSeconds(),
-                List.of(ne.firstBodyId(), ne.secondBodyId()),
-                ne.distanceMeters(), ne.thresholdMeters(),
-                "天体 " + ne.firstBodyId() + " 与 " + ne.secondBodyId()
-                        + " 距离低于 " + String.format("%.2e", ne.thresholdMeters()) + " m。");
-        publish(e, ExperimentMessageType.NEAR_ENCOUNTER, payload);
-    }
-
     private void broadcastError(Experiment e, String code, String message, long step, boolean recoverable) {
         ErrorPayload payload = new ErrorPayload(code, message, step, recoverable);
         publish(e, ExperimentMessageType.ERROR, payload);
     }
 
     private void publish(Experiment e, ExperimentMessageType type, Object payload) {
+        publish(e, type, payload, null);
+    }
+
+    private void publish(Experiment e, ExperimentMessageType type, Object payload, String mergeKey) {
         synchronized (publicationLocks.computeIfAbsent(e.id(), ignored -> new Object())) {
             long seq = nextSequence(e);
-            eventDispatcher.publish(new ExperimentMessage(type, e.id(), seq, Instant.now(), payload));
+            eventDispatcher.publish(new ExperimentMessage(type, e.id(), seq, Instant.now(), payload, mergeKey));
         }
+    }
+
+    /**
+     * 发布近遇事件：ENTER/FINAL 走可靠 FIFO；UPDATE 按 eventId 最新值合并，不占可靠队列。
+     */
+    private void publishEncounter(Experiment e, ActiveEncounter enc, SimulationEvent ev) {
+        String mergeKey = ev.phase() == EventPhase.UPDATE
+                ? "NEAR_UPDATE:" + enc.eventId
+                : null;
+        publish(e, ExperimentMessageType.NEAR_ENCOUNTER, ev, mergeKey);
+    }
+
+    private SimulationEvent encounterEvent(Experiment e, ActiveEncounter enc, EventPhase phase,
+            SimulationState state) {
+        return new SimulationEvent(
+                enc.sequence,
+                enc.eventId,
+                SimulationEventType.NEAR_ENCOUNTER,
+                phase,
+                state.step(),
+                state.simulationTimeSeconds(),
+                Instant.now(),
+                encounterMessage(enc, phase),
+                enc.bodyIds,
+                enc.closestDistance,
+                enc.threshold,
+                enc.triggerDistance,
+                enc.closestDistance,
+                enc.closestStep,
+                enc.closestTime,
+                enc.closestMidpoint,
+                null);
+    }
+
+    private String encounterMessage(ActiveEncounter enc, EventPhase phase) {
+        return switch (phase) {
+            case ENTER -> enc.names + " 进入近距离，当前距离低于阈值。";
+            case UPDATE -> enc.names + " 最近距离更新。";
+            case FINAL -> enc.names + " 离开近距离，本次最近距离定稿。";
+        };
+    }
+
+    /** 暂停/完成/取消/失败/关闭时对全部活动近遇定稿并清空活动集合。 */
+    private void finalizeActiveEncounters(Experiment e, SimulationState state) {
+        if (state == null) {
+            activeEncounters.clear();
+            return;
+        }
+        Iterator<Map.Entry<String, ActiveEncounter>> iterator =
+                activeEncounters.entrySet().iterator();
+        while (iterator.hasNext()) {
+            ActiveEncounter enc = iterator.next().getValue();
+            SimulationEvent ev = encounterEvent(e, enc, EventPhase.FINAL, state);
+            e.upsertEvent(ev);
+            publishEncounter(e, enc, ev);
+            iterator.remove();
+        }
+    }
+
+    private static Map<String, String> nameById(SimulationConfig config) {
+        Map<String, String> names = new LinkedHashMap<>();
+        for (BodySpec body : config.bodies()) {
+            names.put(body.id(), body.name());
+        }
+        return names;
+    }
+
+    private static String nameOf(Map<String, String> idToName, String id) {
+        return idToName.getOrDefault(id, id);
+    }
+
+    private static Vector3 midpoint(SimulationState state, String firstId, String secondId) {
+        BodyState first = state.bodies().stream()
+                .filter(b -> firstId.equals(b.id())).findFirst().orElse(null);
+        BodyState second = state.bodies().stream()
+                .filter(b -> secondId.equals(b.id())).findFirst().orElse(null);
+        if (first == null || second == null) {
+            return null;
+        }
+        return first.position().add(second.position()).multiply(0.5);
     }
 
     /** Allocates the one sequence domain shared by persisted events and WS messages. */
@@ -1075,9 +1187,8 @@ public class ExperimentService implements AutoCloseable {
     // ============================ 工具方法 ============================
 
     private SimulationEvent makeEvent(Experiment e, SimulationEventType type, String message) {
-        return new SimulationEvent(
-                nextSequence(e),
-                type, e.step(), e.simulationTimeSeconds(), Instant.now(), message, null, null);
+        return SimulationEvent.simple(
+                nextSequence(e), type, e.step(), e.simulationTimeSeconds(), Instant.now(), message);
     }
 
     private ExperimentMetrics toExperimentMetrics(Metrics m, double elapsed,
@@ -1140,14 +1251,44 @@ public class ExperimentService implements AutoCloseable {
             Double allTimeMinimumPairDistanceMeters, Long allTimeMinimumPairDistanceStep,
             Double stepsPerSecond, Double elapsedWallClockSeconds) {}
 
-    public record NearEncounterPayload(long step, double simulationTimeSeconds,
-            List<String> bodyIds, double distanceMeters, double thresholdMeters, String message) {}
-
     public record ErrorPayload(String code, String message, Long step, Boolean recoverable) {}
 
     public record BodyStatePayload(String id, Vector3Payload position, Vector3Payload velocity) {}
 
     public record Vector3Payload(double x, double y, double z) {}
+
+    /** 活动近遇状态，按天体对维护。 */
+    private static final class ActiveEncounter {
+        final String eventId;
+        final String key;
+        final List<String> bodyIds;
+        final String names;
+        final double threshold;
+        final double triggerDistance;
+        final long sequence;
+        double closestDistance;
+        long closestStep;
+        double closestTime;
+        Vector3 closestMidpoint;
+        long lastUpdatePublishedAt;
+
+        ActiveEncounter(String eventId, String key, List<String> bodyIds, String names,
+                double threshold, double triggerDistance, double closestDistance,
+                long closestStep, double closestTime, Vector3 closestMidpoint, long sequence) {
+            this.eventId = eventId;
+            this.key = key;
+            this.bodyIds = bodyIds;
+            this.names = names;
+            this.threshold = threshold;
+            this.triggerDistance = triggerDistance;
+            this.closestDistance = closestDistance;
+            this.closestStep = closestStep;
+            this.closestTime = closestTime;
+            this.closestMidpoint = closestMidpoint;
+            this.sequence = sequence;
+            this.lastUpdatePublishedAt = 0L;
+        }
+    }
 
     // ============================ 异常 ============================
 

@@ -7,5 +7,6 @@ public enum ExperimentMessageType {
     METRICS,
     STATUS,
     NEAR_ENCOUNTER,
+    DIAGNOSTIC,
     ERROR
 }

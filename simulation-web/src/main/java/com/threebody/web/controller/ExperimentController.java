@@ -546,13 +546,50 @@ public class ExperimentController {
     private static Map<String, Object> toEventDto(SimulationEvent ev) {
         Map<String, Object> dto = new LinkedHashMap<>();
         dto.put("sequence", ev.sequence());
+        dto.put("eventId", ev.eventId());
         dto.put("type", ev.type().name());
+        dto.put("phase", ev.phase() != null ? ev.phase().name() : null);
         dto.put("step", ev.step());
         dto.put("simulationTimeSeconds", ev.simulationTimeSeconds());
         dto.put("timestamp", ev.timestamp().toString());
         dto.put("message", ev.message());
         dto.put("bodyIds", ev.bodyIds().isEmpty() ? null : ev.bodyIds());
         dto.put("distanceMeters", ev.distanceMeters());
+        dto.put("thresholdMeters", ev.thresholdMeters());
+        dto.put("triggerDistanceMeters", ev.triggerDistanceMeters());
+        dto.put("closestDistanceMeters", ev.closestDistanceMeters());
+        dto.put("closestStep", ev.closestStep());
+        dto.put("closestSimulationTimeSeconds", ev.closestSimulationTimeSeconds());
+        dto.put("midpointPosition", ev.midpointPosition() != null ? toVector3Dto(ev.midpointPosition()) : null);
+        dto.put("diagnostic", ev.diagnostic() != null ? toDiagnosticDto(ev.diagnostic()) : null);
+        return dto;
+    }
+
+    private static Map<String, Object> toDiagnosticDto(com.threebody.app.domain.Diagnostic d) {
+        Map<String, Object> dto = new LinkedHashMap<>();
+        dto.put("code", d.code());
+        dto.put("severity", d.severity().name());
+        dto.put("causeCategory", d.causeCategory().name());
+        dto.put("summary", d.summary());
+        dto.put("likelyCauses", d.likelyCauses());
+        dto.put("evidence", toEvidenceDto(d.evidence()));
+        dto.put("recommendations", d.recommendations());
+        return dto;
+    }
+
+    private static Map<String, Object> toEvidenceDto(com.threebody.app.domain.DiagnosticEvidence ev) {
+        Map<String, Object> dto = new LinkedHashMap<>();
+        dto.put("timeStepSeconds", ev.timeStepSeconds());
+        dto.put("softeningLengthMeters", ev.softeningLengthMeters());
+        dto.put("normalizedEnergyError", ev.normalizedEnergyError());
+        dto.put("relativeEnergyDrift", ev.relativeEnergyDrift());
+        dto.put("minimumPairDistanceMeters", ev.minimumPairDistanceMeters());
+        dto.put("speedRatioToEscape", ev.speedRatioToEscape());
+        dto.put("directionChangeDegrees", ev.directionChangeDegrees());
+        dto.put("rmsRadiusRatio", ev.rmsRadiusRatio());
+        dto.put("outwardBodyFraction", ev.outwardBodyFraction());
+        dto.put("lastStableStep", ev.lastStableStep());
+        dto.put("bodyIds", ev.bodyIds().isEmpty() ? null : ev.bodyIds());
         return dto;
     }
 

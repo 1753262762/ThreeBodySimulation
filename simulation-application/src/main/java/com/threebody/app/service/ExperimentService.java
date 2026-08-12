@@ -15,6 +15,7 @@ import com.threebody.app.event.ExperimentMessageType;
 import com.threebody.app.event.AsyncExperimentEventDispatcher;
 import com.threebody.core.BodySpec;
 import com.threebody.core.BodyState;
+import com.threebody.core.ConfigValidator;
 import com.threebody.core.Metrics;
 import com.threebody.core.MetricsCalculator;
 import com.threebody.core.NBodyIntegrator;
@@ -23,6 +24,7 @@ import com.threebody.core.NumericalInstabilityException;
 import com.threebody.core.SimulationConfig;
 import com.threebody.core.SimulationState;
 import com.threebody.core.StepResult;
+import com.threebody.core.ValidationResult;
 import com.threebody.core.Vector3;
 
 import java.time.Instant;
@@ -290,7 +292,12 @@ public class ExperimentService implements AutoCloseable {
     // ============================ 创建与编辑 ============================
 
     public Experiment createExperiment(String name, SimulationConfig config) {
-        SimulationConfig forExperiment = config.withName(name != null && !name.isBlank() ? name : config.name());
+        ValidationResult vr = ConfigValidator.validate(config);
+        if (!vr.valid()) {
+            throw new ConfigValidationException(vr.issues());
+        }
+        SimulationConfig forExperiment = (vr.normalizedConfig() != null ? vr.normalizedConfig() : config)
+                .withName(name != null && !name.isBlank() ? name : config.name());
         Experiment e = new Experiment(java.util.UUID.randomUUID().toString(),
                 forExperiment.name() != null ? forExperiment.name() : "未命名实验", forExperiment);
         eventSequences.put(e.id(), new AtomicLong(0));
@@ -312,6 +319,13 @@ public class ExperimentService implements AutoCloseable {
             if (e.status() != ExperimentStatus.QUEUED) {
                 throw new IllegalStateTransitionException(e.status(), ExperimentAction.PAUSE,
                         "只有 QUEUED 状态的实验可以编辑");
+            }
+            if (config != null) {
+                ValidationResult vr = ConfigValidator.validate(config);
+                if (!vr.valid()) {
+                    throw new ConfigValidationException(vr.issues());
+                }
+                config = vr.normalizedConfig() != null ? vr.normalizedConfig() : config;
             }
             if (name != null) e.setName(name);
             if (config != null) e.setConfig(config);
@@ -387,6 +401,13 @@ public class ExperimentService implements AutoCloseable {
                     archiveWriter.reopen(e.id());
                     ExperimentStatus previousStatus = e.status();
                     SimulationConfig newConfig = restartConfig != null ? restartConfig : e.config();
+                    if (restartConfig != null) {
+                        ValidationResult vr = ConfigValidator.validate(restartConfig);
+                        if (!vr.valid()) {
+                            throw new ConfigValidationException(vr.issues());
+                        }
+                        newConfig = vr.normalizedConfig() != null ? vr.normalizedConfig() : restartConfig;
+                    }
                     e.setConfig(newConfig);
                     e.setState(null);
                     e.setMetrics(null);
@@ -525,6 +546,22 @@ public class ExperimentService implements AutoCloseable {
         if (e.status() == ExperimentStatus.COMPLETED
                 || e.status() == ExperimentStatus.CANCELLED
                 || e.status() == ExperimentStatus.FAILED) {
+            workerBusy.set(false);
+            scheduleNext();
+            return;
+        }
+
+        // 防御性校验：阻止旧文件、Swing 调用者或恢复数据绕过入口的非法配置
+        ValidationResult runValidation = ConfigValidator.validate(e.config());
+        if (!runValidation.valid()) {
+            e.setEndReason(EndReason.ERROR);
+            e.setStatus(ExperimentStatus.FAILED);
+            e.setErrorMessage("配置校验失败，无法运行");
+            e.setCompletedAt(Instant.now());
+            e.addEvent(makeEvent(e, SimulationEventType.ERROR, "配置校验失败，无法运行"));
+            broadcastError(e, "VALIDATION_FAILED", "配置校验失败，无法运行", e.step(), false);
+            broadcastStatus(e, ExperimentStatus.FAILED, ExperimentStatus.RUNNING, "配置校验失败，无法运行。");
+            repository.save(e);
             workerBusy.set(false);
             scheduleNext();
             return;

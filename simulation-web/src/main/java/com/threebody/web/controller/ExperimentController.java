@@ -11,6 +11,7 @@ import com.threebody.app.domain.Progress;
 import com.threebody.app.domain.SimulationEvent;
 import com.threebody.app.domain.SimulationEventType;
 import com.threebody.app.domain.TrajectoryInfo;
+import com.threebody.app.service.ConfigValidationException;
 import com.threebody.app.service.ExperimentService;
 import com.threebody.core.BodySpec;
 import com.threebody.core.BodyState;
@@ -23,9 +24,14 @@ import com.threebody.core.ValidationIssue;
 import com.threebody.core.ValidationResult;
 import com.threebody.core.Vector3;
 import com.threebody.web.dto.ApiError;
-import jakarta.servlet.http.HttpServletRequest;
+import com.threebody.web.dto.ConfigRequestMapper;
+import com.threebody.web.dto.ExperimentActionRequest;
+import com.threebody.web.dto.ExperimentCreateRequest;
+import com.threebody.web.dto.ExperimentUpdateRequest;
+import com.threebody.web.dto.SimulationConfigRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -46,7 +52,6 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 @RestController
@@ -71,9 +76,12 @@ public class ExperimentController {
     // ============================ 配置校验 ============================
 
     @PostMapping("/configs/validate")
-    public Map<String, Object> validateConfig(@RequestBody Map<String, Object> body) {
-        SimulationConfig config = mapToConfig(body);
-        ValidationResult result = ConfigValidator.validate(config);
+    public Map<String, Object> validateConfig(@RequestBody SimulationConfigRequest body) {
+        ConfigRequestMapper.MappedConfig mapped = ConfigRequestMapper.map(body);
+        if (!mapped.complete()) {
+            return validationFailureResponse(mapped.issues());
+        }
+        ValidationResult result = ConfigValidator.validate(mapped.config());
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("valid", result.valid());
@@ -113,24 +121,21 @@ public class ExperimentController {
     }
 
     @PostMapping("/experiments")
-    public ResponseEntity<Map<String, Object>> createExperiment(@RequestBody Map<String, Object> body) {
-        String name = (String) body.get("name");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> configMap = (Map<String, Object>) body.get("config");
-        if (configMap == null) {
-            throw new MalformedRequestException("缺少 config 字段");
+    public ResponseEntity<Map<String, Object>> createExperiment(
+            @RequestBody ExperimentCreateRequest body) {
+        ConfigRequestMapper.MappedConfig mapped = ConfigRequestMapper.map(
+                body != null ? body.config() : null);
+        if (!mapped.complete()) {
+            return ResponseEntity.badRequest().body(toErrorDto("VALIDATION_FAILED",
+                    "配置校验失败", mapped.issues()));
         }
-        SimulationConfig config = mapToConfig(configMap);
-
-        // 校验
-        ValidationResult vr = ConfigValidator.validate(config);
+        ValidationResult vr = ConfigValidator.validate(mapped.config());
         if (!vr.valid()) {
             return ResponseEntity.badRequest().body(toErrorDto("VALIDATION_FAILED",
                     "配置校验失败", vr.issues()));
         }
-        SimulationConfig normalized = vr.normalizedConfig();
 
-        Experiment e = service.createExperiment(name, normalized);
+        Experiment e = service.createExperiment(body.name(), vr.normalizedConfig());
 
         Map<String, Object> dto = toExperimentDto(e, service.getQueuePosition(e.id()),
                 service.getStorageBytes(e.id()));
@@ -148,21 +153,23 @@ public class ExperimentController {
 
     @PutMapping("/experiments/{id}")
     public Map<String, Object> updateExperiment(@PathVariable("id") String id,
-            @RequestBody Map<String, Object> body) {
+            @RequestBody ExperimentUpdateRequest body) {
         Experiment e = service.getExperiment(id);
         if (e == null) throw new ExperimentNotFoundException(id);
         if (e.status() != ExperimentStatus.QUEUED) {
             throw new ExperimentNotEditableException(e.status());
         }
 
-        String name = (String) body.get("name");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> configMap = (Map<String, Object>) body.get("config");
-        SimulationConfig config = configMap != null ? mapToConfig(configMap) : null;
-        if (config != null) {
-            ValidationResult vr = ConfigValidator.validate(config);
+        String name = body != null ? body.name() : null;
+        SimulationConfig config = null;
+        if (body != null && body.config() != null) {
+            ConfigRequestMapper.MappedConfig mapped = ConfigRequestMapper.map(body.config());
+            if (!mapped.complete()) {
+                throw new ValidationFailedException(mapped.issues());
+            }
+            ValidationResult vr = ConfigValidator.validate(mapped.config());
             if (!vr.valid()) {
-                throw new MalformedRequestException("配置校验失败");
+                throw new ValidationFailedException(vr.issues());
             }
             config = vr.normalizedConfig();
         }
@@ -183,11 +190,11 @@ public class ExperimentController {
 
     @PostMapping("/experiments/{id}/actions")
     public Map<String, Object> submitAction(@PathVariable("id") String id,
-            @RequestBody Map<String, Object> body) {
+            @RequestBody ExperimentActionRequest body) {
         Experiment e = service.getExperiment(id);
         if (e == null) throw new ExperimentNotFoundException(id);
 
-        String actionStr = (String) body.get("action");
+        String actionStr = body != null ? body.action() : null;
         if (actionStr == null) throw new MalformedRequestException("缺少 action 字段");
 
         ExperimentAction action;
@@ -197,17 +204,18 @@ public class ExperimentController {
             throw new MalformedRequestException("未知动作：" + actionStr);
         }
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> configMap = (Map<String, Object>) body.get("config");
         SimulationConfig restartConfig = null;
-        if (configMap != null) {
+        if (body.config() != null) {
             if (action != ExperimentAction.RESTART) {
                 throw new MalformedRequestException("仅 RESTART 可携带 config");
             }
-            restartConfig = mapToConfig(configMap);
-            ValidationResult vr = ConfigValidator.validate(restartConfig);
+            ConfigRequestMapper.MappedConfig mapped = ConfigRequestMapper.map(body.config());
+            if (!mapped.complete()) {
+                throw new ValidationFailedException(mapped.issues());
+            }
+            ValidationResult vr = ConfigValidator.validate(mapped.config());
             if (!vr.valid()) {
-                throw new MalformedRequestException("重启配置校验失败");
+                throw new ValidationFailedException(vr.issues());
             }
             restartConfig = vr.normalizedConfig();
         }
@@ -362,6 +370,28 @@ public class ExperimentController {
     @ResponseStatus(HttpStatus.CONFLICT)
     public ApiError handleQueueConflict(QueueConflictException ex) {
         return new ApiError("QUEUE_CONFLICT", ex.getMessage());
+    }
+
+    @ExceptionHandler(ConfigValidationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiError handleConfigValidation(ConfigValidationException ex) {
+        return new ApiError("VALIDATION_FAILED", ex.getMessage(),
+                ex.issues().stream().map(issue -> new ApiError.ValidationIssueDto(
+                        issue.field(), issue.code().name(), issue.message(),
+                        issue.severity().name(),
+                        issue.riskLevel() != null ? issue.riskLevel().name() : null)).toList());
+    }
+
+    @ExceptionHandler(ValidationFailedException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiError handleValidationFailed(ValidationFailedException ex) {
+        return new ApiError("VALIDATION_FAILED", ex.getMessage(), ex.issues());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiError handleUnreadable(HttpMessageNotReadableException ex) {
+        return new ApiError("MALFORMED_REQUEST", "请求体不是合法 JSON 或字段类型错误");
     }
 
     @ExceptionHandler(MalformedRequestException.class)
@@ -541,6 +571,7 @@ public class ExperimentController {
         dto.put("code", issue.code().name());
         dto.put("message", issue.message());
         dto.put("severity", issue.severity().name());
+        dto.put("riskLevel", issue.riskLevel() != null ? issue.riskLevel().name() : null);
         return dto;
     }
 
@@ -580,41 +611,15 @@ public class ExperimentController {
         return samples;
     }
 
-    // ============================ 配置解析 ============================
+    // ============================ 配置解析辅助 ============================
 
-    @SuppressWarnings("unchecked")
-    private SimulationConfig mapToConfig(Map<String, Object> map) {
-        String name = (String) map.getOrDefault("name", "未命名");
-        List<Map<String, Object>> bodyList = (List<Map<String, Object>>) map.get("bodies");
-        List<BodySpec> bodies = new ArrayList<>();
-        if (bodyList != null) {
-            for (int i = 0; i < bodyList.size(); i++) {
-                Map<String, Object> bm = bodyList.get(i);
-                String id = (String) bm.getOrDefault("id", null);
-                String bname = (String) bm.getOrDefault("name", "天体 " + (i + 1));
-                String color = (String) bm.getOrDefault("color", null);
-                double mass = ((Number) bm.get("massKg")).doubleValue();
-                Map<String, Object> pos = (Map<String, Object>) bm.get("position");
-                Map<String, Object> vel = (Map<String, Object>) bm.get("velocity");
-                Vector3 position = new Vector3(
-                        ((Number) pos.get("x")).doubleValue(),
-                        ((Number) pos.get("y")).doubleValue(),
-                        ((Number) pos.get("z")).doubleValue());
-                Vector3 velocity = new Vector3(
-                        ((Number) vel.get("x")).doubleValue(),
-                        ((Number) vel.get("y")).doubleValue(),
-                        ((Number) vel.get("z")).doubleValue());
-                bodies.add(new BodySpec(id, bname, color, mass, position, velocity));
-            }
-        }
-        double dt = ((Number) map.get("timeStepSeconds")).doubleValue();
-        double g = ((Number) map.get("gravitationalConstant")).doubleValue();
-        double softening = ((Number) map.get("softeningLengthMeters")).doubleValue();
-        Long maxSteps = map.containsKey("maxSteps") && map.get("maxSteps") != null
-                ? ((Number) map.get("maxSteps")).longValue() : null;
-        Double targetTime = map.containsKey("targetSimulationTimeSeconds") && map.get("targetSimulationTimeSeconds") != null
-                ? ((Number) map.get("targetSimulationTimeSeconds")).doubleValue() : null;
-        return new SimulationConfig(name, bodies, dt, g, softening, maxSteps, targetTime);
+    private Map<String, Object> validationFailureResponse(List<ValidationIssue> issues) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("valid", false);
+        response.put("issues", issues.stream().map(ExperimentController::toIssueDto).toList());
+        response.put("normalizedConfig", null);
+        response.put("estimatedSteps", null);
+        return response;
     }
 
     private static String escapeCsv(String value) {
@@ -638,6 +643,22 @@ public class ExperimentController {
     public static class MalformedRequestException extends RuntimeException {
         public MalformedRequestException(String message) {
             super(message);
+        }
+    }
+
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public static class ValidationFailedException extends RuntimeException {
+        private final List<ApiError.ValidationIssueDto> issues;
+
+        public ValidationFailedException(List<ValidationIssue> issues) {
+            super("配置校验失败");
+            this.issues = issues.stream().map(issue -> new ApiError.ValidationIssueDto(
+                    issue.field(), issue.code().name(), issue.message(), issue.severity().name(),
+                    issue.riskLevel() != null ? issue.riskLevel().name() : null)).toList();
+        }
+
+        public List<ApiError.ValidationIssueDto> issues() {
+            return issues;
         }
     }
 

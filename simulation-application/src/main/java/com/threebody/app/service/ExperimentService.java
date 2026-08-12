@@ -826,14 +826,8 @@ public class ExperimentService implements AutoCloseable {
     }
 
     private long estimatedTotalSteps(SimulationConfig config) {
-        long maxSteps = config.maxSteps() != null ? Math.max(0L, config.maxSteps()) : Long.MAX_VALUE;
-        if (config.targetSimulationTimeSeconds() != null && config.timeStepSeconds() > 0.0) {
-            double estimate = config.targetSimulationTimeSeconds() / config.timeStepSeconds();
-            long targetSteps = estimate >= Long.MAX_VALUE ? Long.MAX_VALUE
-                    : Math.max(0L, (long) Math.ceil(estimate));
-            return Math.min(maxSteps, targetSteps);
-        }
-        return maxSteps == Long.MAX_VALUE ? 0L : maxSteps;
+        Long estimated = config.estimatedTotalSteps();
+        return estimated != null ? estimated : 0L;
     }
 
     private void offerArchivePoint(Experiment e, SimulationState state, boolean force) {

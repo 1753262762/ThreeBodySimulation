@@ -58,15 +58,22 @@ public record SimulationConfig(
     }
 
     /**
-     * 估算总步数：优先使用 maxSteps，其次使用目标模拟时间除以步长。
+     * 估算总步数：取两个结束条件中先达到者。
+     * maxCandidate 为 maxSteps（缺失时为 Long.MAX_VALUE）；
+     * targetCandidate 为 ceil(targetTime / dt)（缺失时为 Long.MAX_VALUE）；
+     * 结果为两者较小值。两者都缺失时返回 null，由强制校验拦截。
      */
     public Long estimatedTotalSteps() {
-        if (maxSteps != null) {
-            return maxSteps;
+        long maxCandidate = maxSteps != null ? maxSteps : Long.MAX_VALUE;
+        long targetCandidate = Long.MAX_VALUE;
+        if (targetSimulationTimeSeconds != null && timeStepSeconds > 0.0) {
+            double estimate = targetSimulationTimeSeconds / timeStepSeconds;
+            targetCandidate = estimate >= Long.MAX_VALUE ? Long.MAX_VALUE
+                    : Math.max(0L, (long) Math.ceil(estimate));
         }
-        if (targetSimulationTimeSeconds != null && timeStepSeconds > 0) {
-            return (long) Math.ceil(targetSimulationTimeSeconds / timeStepSeconds);
+        if (maxCandidate == Long.MAX_VALUE && targetCandidate == Long.MAX_VALUE) {
+            return null;
         }
-        return null;
+        return Math.min(maxCandidate, targetCandidate);
     }
 }

@@ -130,6 +130,9 @@ public class ExperimentService implements AutoCloseable {
     /** 事件序号（每实验独立）。 */
     private final Map<String, AtomicLong> eventSequences = new ConcurrentHashMap<>();
 
+    /** 运行代次（每实验独立）：RESTART/删除时递增，用于使回放任务失效。 */
+    private final Map<String, Long> runGenerations = new ConcurrentHashMap<>();
+
     /** Serializes sequence allocation with event enqueue per experiment. */
     private final Map<String, Object> publicationLocks = new ConcurrentHashMap<>();
 
@@ -292,6 +295,15 @@ public class ExperimentService implements AutoCloseable {
         return repository.storageBytes(id);
     }
 
+    /** 当前运行代次；RESTART/删除后递增，回放任务据此判断是否失效。 */
+    public long runGeneration(String id) {
+        return runGenerations.getOrDefault(id, 0L);
+    }
+
+    private long bumpGeneration(String id) {
+        return runGenerations.merge(id, 1L, Long::sum);
+    }
+
     /** Flushes archive batches before an export/report read. */
     public void flushTrajectory(String id) {
         archiveWriter.flush(id);
@@ -423,6 +435,7 @@ public class ExperimentService implements AutoCloseable {
                 }
                 case RESTART -> {
                     assertTransition(e, ExperimentAction.RESTART);
+                    bumpGeneration(e.id());
                     try {
                         archiveWriter.discard(e.id());
                     } catch (RuntimeException failure) {
@@ -535,11 +548,13 @@ public class ExperimentService implements AutoCloseable {
                 throw new IllegalStateTransitionException(e.status(), ExperimentAction.CANCEL,
                         "RUNNING 实验必须先取消再删除");
             }
+            bumpGeneration(id);
             archiveWriter.discard(id);
             queue.remove(id);
             experiments.remove(id);
             eventSequences.remove(id);
             publicationLocks.remove(id);
+            runGenerations.remove(id);
         }
         return repository.delete(id);
     }

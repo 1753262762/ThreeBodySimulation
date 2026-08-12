@@ -1,6 +1,8 @@
 package com.threebody.web.controller;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -13,6 +15,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentStatus;
 import com.threebody.app.service.ExperimentService;
+import com.threebody.app.service.HistorySlice;
 import com.threebody.core.BodySpec;
 import com.threebody.core.PhysicalConstants;
 import com.threebody.core.SimulationConfig;
@@ -103,6 +106,26 @@ class ExperimentControllerTest {
                         .content("{\"name\":\"新名称\",\"config\":{\"bad\":true}}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    }
+
+    @Test
+    void historyReturnsRangeFields() throws Exception {
+        ExperimentService service = mock(ExperimentService.class);
+        Experiment experiment = new Experiment("experiment-1", "REST 测试", config());
+        experiment.setState(new com.threebody.core.SimulationState(5L, 300.0,
+                java.util.List.of()));
+        when(service.getExperiment("experiment-1")).thenReturn(experiment);
+        when(service.readHistory(anyString(), anyLong(), any(), anyInt())).thenReturn(
+                new HistorySlice(java.util.List.of(), 0L, 5L, 1L, false));
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ExperimentController(service)).build();
+
+        mvc.perform(get("/api/v1/experiments/{id}/history", "experiment-1")
+                        .param("fromStep", "0").param("toStep", "5").param("maxPoints", "100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.availableFromStep").value(0))
+                .andExpect(jsonPath("$.availableToStep").value(5))
+                .andExpect(jsonPath("$.archiveSampleStride").value(1))
+                .andExpect(jsonPath("$.downsampled").value(false));
     }
 
     private static SimulationConfig config() {

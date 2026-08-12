@@ -297,6 +297,30 @@ public class ExperimentService implements AutoCloseable {
         archiveWriter.flush(id);
     }
 
+    /**
+     * 查询历史轨迹范围。运行中不强制 flush，归档点可能落后于权威状态。
+     *
+     * @throws IllegalArgumentException fromStep/toStep/maxPoints 非法或 toStep 超过当前权威步
+     */
+    public HistorySlice readHistory(String id, long fromStep, Long toStep, int maxPoints) {
+        Experiment e = getExperiment(id);
+        if (e == null) throw new ExperimentNotFoundException(id);
+        if (fromStep < 0L) {
+            throw new IllegalArgumentException("fromStep 必须 >= 0");
+        }
+        long currentStep = e.step();
+        long effectiveTo = toStep != null ? toStep : currentStep;
+        if (effectiveTo < fromStep) {
+            throw new IllegalArgumentException("toStep 必须 >= fromStep");
+        }
+        if (effectiveTo > currentStep) {
+            throw new IllegalArgumentException("toStep 不能超过当前权威步 " + currentStep);
+        }
+        int limit = maxPoints <= 0 ? 1000 : Math.min(maxPoints, 2000);
+        long stride = e.trajectoryInfo().sampleStride();
+        return repository.readTrajectoryRange(id, fromStep, effectiveTo, limit, stride);
+    }
+
     // ============================ 创建与编辑 ============================
 
     public Experiment createExperiment(String name, SimulationConfig config) {

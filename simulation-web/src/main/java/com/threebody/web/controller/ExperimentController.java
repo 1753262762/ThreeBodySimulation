@@ -13,6 +13,7 @@ import com.threebody.app.domain.SimulationEventType;
 import com.threebody.app.domain.TrajectoryInfo;
 import com.threebody.app.service.ConfigValidationException;
 import com.threebody.app.service.ExperimentService;
+import com.threebody.app.service.HistorySlice;
 import com.threebody.core.BodySpec;
 import com.threebody.core.BodyState;
 import com.threebody.core.ConfigValidator;
@@ -247,6 +248,32 @@ public class ExperimentController {
         } catch (ExperimentService.QueueConflictException ex) {
             throw new QueueConflictException(ex.getMessage());
         }
+    }
+
+    @GetMapping("/experiments/{id}/history")
+    public Map<String, Object> getExperimentHistory(@PathVariable("id") String id,
+            @RequestParam(name = "fromStep", required = false, defaultValue = "0") long fromStep,
+            @RequestParam(name = "toStep", required = false) Long toStep,
+            @RequestParam(name = "maxPoints", required = false, defaultValue = "1000") int maxPoints) {
+        if (maxPoints < 2 || maxPoints > 2000) {
+            throw new MalformedRequestException("maxPoints 必须在 2～2000 之间");
+        }
+        Experiment e = service.getExperiment(id);
+        if (e == null) throw new ExperimentNotFoundException(id);
+        HistorySlice slice;
+        try {
+            slice = service.readHistory(id, fromStep, toStep, maxPoints);
+        } catch (IllegalArgumentException ex) {
+            throw new MalformedRequestException(ex.getMessage());
+        }
+        Map<String, Object> dto = new LinkedHashMap<>();
+        dto.put("points", slice.points().stream().map(ExperimentController::toStateDto).toList());
+        dto.put("availableFromStep", slice.availableFromStep());
+        dto.put("availableToStep", slice.availableToStep());
+        dto.put("archiveSampleStride", slice.archiveSampleStride());
+        dto.put("downsampled", slice.downsampled());
+        dto.put("currentState", e.state() != null ? toStateDto(e.state()) : null);
+        return dto;
     }
 
     // ============================ 导出 ============================

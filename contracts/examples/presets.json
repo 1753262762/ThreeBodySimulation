@@ -1,74 +1,56 @@
 [
   {
     "key": "A",
-    "name": "方案 A · 混沌三星",
-    "description": "三个质量相近的天体构成典型混沌三体系统，长期轨道不可预测。源自旧 Swing 实现 planA。",
+    "name": "方案 A：稳定层级三星行星系统",
+    "description": "三颗恒星与一颗行星构成的层级引力系统，适合长期稳定性观测。",
     "config": {
-      "name": "方案 A · 混沌三星",
+      "name": "方案 A：稳定层级三星行星系统",
       "bodies": [
-        { "id": "11111111-1111-4111-8111-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 2.1e8, "y": 1.2e6, "z": 0 }, "velocity": { "x": 1919, "y": 1145, "z": 0 } },
-        { "id": "11111111-1111-4111-8111-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 2.796e11, "z": 0 }, "velocity": { "x": 20000, "y": -20000, "z": 0 } },
-        { "id": "11111111-1111-4111-8111-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.0289e31, "position": { "x": -2.796e11, "y": -2.796e11, "z": 0 }, "velocity": { "x": -20000, "y": 20000, "z": 0 } }
+        { "id": "11111111-1111-4111-8111-000000000001", "name": "主恒星", "color": "#ffd166", "massKg": 1.98847e30, "position": { "x": -5.31903e11, "y": -2.99195e12, "z": 0 }, "velocity": { "x": 1289.73, "y": -6279.21, "z": 0 } },
+        { "id": "11111111-1111-4111-8111-000000000002", "name": "内层伴星", "color": "#4d96ff", "massKg": 1.590776e30, "position": { "x": 6.6488e11, "y": -2.99195e12, "z": 0 }, "velocity": { "x": 1289.73, "y": 7849.12, "z": 0 } },
+        { "id": "11111111-1111-4111-8111-000000000003", "name": "远伴星", "color": "#ef476f", "massKg": 1.193082e30, "position": { "x": 852845.04, "y": 8.97588e12, "z": 0 }, "velocity": { "x": -3869.21, "y": 0.045, "z": 0 } },
+        { "id": "11111111-1111-4111-8111-000000000004", "name": "三体行星", "color": "#76c893", "massKg": 5.9722e24, "position": { "x": -6.81501e11, "y": -2.99195e12, "z": 0 }, "velocity": { "x": 1289.73, "y": -36064.36, "z": 0 } }
       ],
-      "timeStepSeconds": 43200,
+      "timeStepSeconds": 31557.6,
       "gravitationalConstant": 6.6743e-11,
-      "softeningLengthMeters": 100000000,
-      "maxSteps": 200000,
+      "softeningLengthMeters": 1000000,
+      "maxSteps": 10000000,
       "targetSimulationTimeSeconds": null
     }
   },
   {
     "key": "B",
-    "name": "方案 B · 水平对称四体",
-    "description": "水平轴对称分布并附加一个离轴伴星，时间步长取四分之一以抑制漂移。源自旧 Swing 实现 planB。",
+    "name": "方案 B：双星花环",
+    "description": "一对互绕双星与外围轻质量行星组成的层次系统，可同时看到紧凑双环和宽阔外轨道。",
     "config": {
-      "name": "方案 B · 水平对称四体",
+      "name": "方案 B：双星花环",
       "bodies": [
-        { "id": "22222222-2222-4222-8222-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 0, "z": 0 } },
-        { "id": "22222222-2222-4222-8222-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 20000, "z": 0 } },
-        { "id": "22222222-2222-4222-8222-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.0289e31, "position": { "x": -2.796e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": -20000, "z": 0 } },
-        { "id": "22222222-2222-4222-8222-000000000004", "name": "伴星 δ", "color": "#c084fc", "massKg": 5.289e30, "position": { "x": -4.796e11, "y": 8, "z": 9 }, "velocity": { "x": 0, "y": 0, "z": 20000 } }
+        { "id": "22222222-2222-4222-8222-000000000001", "name": "蓝巨星", "color": "#4dabf7", "massKg": 1.0e30, "position": { "x": -1.0e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": -12917, "z": 0 } },
+        { "id": "22222222-2222-4222-8222-000000000002", "name": "红巨星", "color": "#ff6b6b", "massKg": 1.0e30, "position": { "x": 1.0e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 12917, "z": 0 } },
+        { "id": "22222222-2222-4222-8222-000000000003", "name": "薄荷行星", "color": "#63e6be", "massKg": 5.0e27, "position": { "x": 0, "y": 4.5e11, "z": 0 }, "velocity": { "x": -17220, "y": 0, "z": 0 } }
       ],
-      "timeStepSeconds": 10800,
+      "timeStepSeconds": 9467.28,
       "gravitationalConstant": 6.6743e-11,
-      "softeningLengthMeters": 100000000,
-      "maxSteps": 400000,
+      "softeningLengthMeters": 10000000,
+      "maxSteps": 200000,
       "targetSimulationTimeSeconds": null
     }
   },
   {
     "key": "C",
-    "name": "方案 C · 垂直对称配置",
-    "description": "对角对称分布，第三体质量更大，系统整体偏心。源自旧 Swing 实现 planC。",
+    "name": "方案 C：三角华尔兹",
+    "description": "拉格朗日等边三角构型，三颗等质量天体保持近似三角形队形绕质心旋转，轨迹呈三重环带。",
     "config": {
-      "name": "方案 C · 垂直对称配置",
+      "name": "方案 C：三角华尔兹",
       "bodies": [
-        { "id": "33333333-3333-4333-8333-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 0, "z": 0 } },
-        { "id": "33333333-3333-4333-8333-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 2.796e11, "z": 0 }, "velocity": { "x": 20000, "y": -20000, "z": 0 } },
-        { "id": "33333333-3333-4333-8333-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.3289e31, "position": { "x": -2.796e11, "y": -2.796e11, "z": 0 }, "velocity": { "x": -20000, "y": 20000, "z": 0 } }
+        { "id": "33333333-3333-4333-8333-000000000001", "name": "翡翠星", "color": "#38d9a9", "massKg": 1.0e30, "position": { "x": 1.73205e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 14920, "z": 0 } },
+        { "id": "33333333-3333-4333-8333-000000000002", "name": "紫晶星", "color": "#b197fc", "massKg": 1.0e30, "position": { "x": -8.66025e10, "y": 1.5e11, "z": 0 }, "velocity": { "x": -12918, "y": -7460, "z": 0 } },
+        { "id": "33333333-3333-4333-8333-000000000003", "name": "琥珀星", "color": "#ffa94d", "massKg": 1.0e30, "position": { "x": -8.66025e10, "y": -1.5e11, "z": 0 }, "velocity": { "x": 12918, "y": -7460, "z": 0 } }
       ],
-      "timeStepSeconds": 43200,
+      "timeStepSeconds": 108,
       "gravitationalConstant": 6.6743e-11,
-      "softeningLengthMeters": 100000000,
-      "maxSteps": 200000,
-      "targetSimulationTimeSeconds": null
-    }
-  },
-  {
-    "key": "D",
-    "name": "方案 D · 紧凑配置",
-    "description": "天体间距较小，相互作用更剧烈，近距离事件更频繁。源自旧 Swing 实现 planD。",
-    "config": {
-      "name": "方案 D · 紧凑配置",
-      "bodies": [
-        { "id": "44444444-4444-4444-8444-000000000001", "name": "恒星 α", "color": "#ffc857", "massKg": 1.0989e31, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 0, "z": 0 } },
-        { "id": "44444444-4444-4444-8444-000000000002", "name": "恒星 β", "color": "#59c3ff", "massKg": 1.0289e31, "position": { "x": 2.796e11, "y": 2.796e11, "z": 0 }, "velocity": { "x": 20000, "y": -20000, "z": 0 } },
-        { "id": "44444444-4444-4444-8444-000000000003", "name": "恒星 γ", "color": "#ff647c", "massKg": 1.2289e31, "position": { "x": -2.796e11, "y": -2.796e11, "z": 0 }, "velocity": { "x": -20000, "y": 20000, "z": 0 } }
-      ],
-      "timeStepSeconds": 43200,
-      "gravitationalConstant": 6.6743e-11,
-      "softeningLengthMeters": 100000000,
-      "maxSteps": 200000,
+      "softeningLengthMeters": 10000000,
+      "maxSteps": 20000000,
       "targetSimulationTimeSeconds": null
     }
   }

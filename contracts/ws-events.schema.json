@@ -2,15 +2,15 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://threebody.local/contracts/ws-events.schema.json",
   "title": "Three Body Lab WebSocket Envelope",
-  "description": "WebSocket 地址为 /ws/v1/experiments/{id}。所有数值为 SI 单位。实时发布上限为快照 60 Hz、轨迹增量 60 Hz、指标 2 Hz（按单调墙钟截止时间，错过周期不补发）。sequence 在单个实验内单调递增，客户端必须丢弃不大于已处理值的消息。",
+  "description": "WebSocket 地址为 /ws/v1/experiments/{id}。所有数值为 SI 单位。实时发布上限为快照 60 Hz、轨迹增量 60 Hz、指标 2 Hz（按单调墙钟截止时间，错过周期不补发）。envelope 的 sequence 在单个实验内单调递增，客户端必须丢弃不大于已处理值的消息；它只负责消息传输去重与顺序，不等于事件序列号。NEAR_ENCOUNTER 的 ENTER/FINAL 与 DIAGNOSTIC 走可靠 FIFO，NEAR_ENCOUNTER UPDATE 按 eventId 最新值合并，不占用可靠队列。1.1 版本 NEAR_ENCOUNTER 与 DIAGNOSTIC 的 payload 均为 { event: SimulationEvent }。",
   "type": "object",
   "required": ["schemaVersion", "type", "experimentId", "sequence", "timestamp", "payload"],
   "additionalProperties": false,
   "properties": {
-    "schemaVersion": { "const": "1.0" },
+    "schemaVersion": { "const": "1.1" },
     "type": {
       "type": "string",
-      "enum": ["SNAPSHOT", "TRAJECTORY", "METRICS", "STATUS", "NEAR_ENCOUNTER", "ERROR"]
+      "enum": ["SNAPSHOT", "TRAJECTORY", "METRICS", "STATUS", "NEAR_ENCOUNTER", "DIAGNOSTIC", "ERROR"]
     },
     "experimentId": { "type": "string", "format": "uuid" },
     "sequence": { "type": "integer", "minimum": 1 },
@@ -22,7 +22,8 @@
     { "if": { "properties": { "type": { "const": "TRAJECTORY" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/trajectoryPayload" } } } },
     { "if": { "properties": { "type": { "const": "METRICS" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/metricsPayload" } } } },
     { "if": { "properties": { "type": { "const": "STATUS" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/statusPayload" } } } },
-    { "if": { "properties": { "type": { "const": "NEAR_ENCOUNTER" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/nearEncounterPayload" } } } },
+    { "if": { "properties": { "type": { "const": "NEAR_ENCOUNTER" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/eventPayload" } } } },
+    { "if": { "properties": { "type": { "const": "DIAGNOSTIC" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/eventPayload" } } } },
     { "if": { "properties": { "type": { "const": "ERROR" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/errorPayload" } } } }
   ],
   "definitions": {
@@ -44,6 +45,87 @@
         "id": { "type": "string" },
         "position": { "$ref": "#/definitions/vector3" },
         "velocity": { "$ref": "#/definitions/vector3" }
+      }
+    },
+    "eventPhase": {
+      "type": "string",
+      "enum": ["ENTER", "UPDATE", "FINAL"]
+    },
+    "diagnosticSeverity": {
+      "type": "string",
+      "enum": ["NOTICE", "WARNING", "CRITICAL"]
+    },
+    "diagnosticCauseCategory": {
+      "type": "string",
+      "enum": ["PHYSICAL_PHENOMENON", "PARAMETER_RISK", "NUMERICAL_ERROR", "MIXED"]
+    },
+    "diagnosticEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeStepSeconds": { "type": ["number", "null"] },
+        "softeningLengthMeters": { "type": ["number", "null"] },
+        "normalizedEnergyError": { "type": ["number", "null"] },
+        "relativeEnergyDrift": { "type": ["number", "null"] },
+        "minimumPairDistanceMeters": { "type": ["number", "null"] },
+        "speedRatioToEscape": { "type": ["number", "null"] },
+        "directionChangeDegrees": { "type": ["number", "null"] },
+        "rmsRadiusRatio": { "type": ["number", "null"] },
+        "outwardBodyFraction": { "type": ["number", "null"] },
+        "lastStableStep": { "type": ["integer", "null"] },
+        "bodyIds": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": ["code", "severity", "causeCategory", "summary", "likelyCauses", "evidence", "recommendations"],
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": ["ENERGY_DRIFT", "POSSIBLE_ESCAPE", "SUDDEN_DEFLECTION", "RAPID_DISASSEMBLY", "NUMERICAL_INSTABILITY"]
+        },
+        "severity": { "$ref": "#/definitions/diagnosticSeverity" },
+        "causeCategory": { "$ref": "#/definitions/diagnosticCauseCategory" },
+        "summary": { "type": "string" },
+        "likelyCauses": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "$ref": "#/definitions/diagnosticEvidence" },
+        "recommendations": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "simulationEvent": {
+      "type": "object",
+      "required": ["sequence", "type", "step", "simulationTimeSeconds", "timestamp", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1, "description": "逻辑事件创建顺序，创建后不变" },
+        "eventId": { "type": ["string", "null"] },
+        "type": {
+          "type": "string",
+          "enum": ["NEAR_ENCOUNTER", "STATUS_CHANGE", "DIAGNOSTIC", "NUMERICAL_WARNING", "ERROR"]
+        },
+        "phase": { "anyOf": [{ "$ref": "#/definitions/eventPhase" }, { "type": "null" }] },
+        "step": { "type": "integer", "minimum": 0 },
+        "simulationTimeSeconds": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "message": { "type": "string" },
+        "bodyIds": { "type": ["array", "null"], "items": { "type": "string" } },
+        "distanceMeters": { "type": ["number", "null"] },
+        "thresholdMeters": { "type": ["number", "null"] },
+        "triggerDistanceMeters": { "type": ["number", "null"] },
+        "closestDistanceMeters": { "type": ["number", "null"] },
+        "closestStep": { "type": ["integer", "null"] },
+        "closestSimulationTimeSeconds": { "type": ["number", "null"] },
+        "midpointPosition": { "anyOf": [{ "$ref": "#/definitions/vector3" }, { "type": "null" }] },
+        "diagnostic": { "anyOf": [{ "$ref": "#/definitions/diagnostic" }, { "type": "null" }] }
+      }
+    },
+    "eventPayload": {
+      "type": "object",
+      "required": ["event"],
+      "additionalProperties": false,
+      "properties": {
+        "event": { "$ref": "#/definitions/simulationEvent" }
       }
     },
     "snapshotPayload": {
@@ -149,19 +231,6 @@
         "message": { "type": ["string", "null"] }
       }
     },
-    "nearEncounterPayload": {
-      "type": "object",
-      "required": ["step", "simulationTimeSeconds", "bodyIds", "distanceMeters", "thresholdMeters"],
-      "additionalProperties": false,
-      "properties": {
-        "step": { "type": "integer", "minimum": 0 },
-        "simulationTimeSeconds": { "type": "number" },
-        "bodyIds": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "string" } },
-        "distanceMeters": { "type": "number" },
-        "thresholdMeters": { "type": "number", "description": "固定为 5 倍软化长度" },
-        "message": { "type": ["string", "null"] }
-      }
-    },
     "errorPayload": {
       "type": "object",
       "required": ["code", "message"],
@@ -178,6 +247,8 @@
             "UNSUPPORTED_ACTION_PAYLOAD",
             "MALFORMED_REQUEST",
             "STORAGE_FAILURE",
+            "REPLAY_QUEUE_FULL",
+            "REPLAY_JOB_NOT_FOUND",
             "NUMERICAL_INSTABILITY",
             "INTERNAL_ERROR"
           ]

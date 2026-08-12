@@ -1,5 +1,6 @@
 package com.threebody.app.service;
 
+import com.threebody.app.domain.Diagnostic;
 import com.threebody.app.domain.EndReason;
 import com.threebody.app.domain.EventPhase;
 import com.threebody.app.domain.Experiment;
@@ -612,6 +613,9 @@ public class ExperimentService implements AutoCloseable {
             repository.save(e);
         }
 
+        DiagnosticEngine diagnosticEngine = new DiagnosticEngine(config, state);
+        boolean hasActiveEncounter = false;
+
         long now = monotonicClock.nanoTime();
         lastMetricsWallTime = now;
         long nextSnapshotDeadline = now + SNAPSHOT_PERIOD_NANOS;
@@ -660,6 +664,18 @@ public class ExperimentService implements AutoCloseable {
                 try {
                     result = NBodyIntegrator.step(config, state);
                 } catch (NumericalInstabilityException ex) {
+                    SimulationState unstableState = state;
+                    Diagnostic instability = DiagnosticEngine.numericalInstability(config,
+                            unstableState.step(),
+                            unstableState.bodies().stream().map(BodyState::id).toList(),
+                            unstableState.bodies().stream()
+                                    .mapToDouble(b -> unstableState.bodies().stream()
+                                            .mapToDouble(o -> o.position().subtract(b.position()).length())
+                                            .filter(d -> d > 0.0).min().orElse(Double.NaN))
+                                    .filter(Double::isFinite).min().orElse(Double.NaN));
+                    SimulationEvent instabilityEvent = diagnosticEvent(e, unstableState, instability);
+                    e.upsertEvent(instabilityEvent);
+                    publish(e, ExperimentMessageType.DIAGNOSTIC, instabilityEvent);
                     e.setEndReason(EndReason.ERROR);
                     e.setStatus(ExperimentStatus.FAILED);
                     e.setErrorMessage(ex.getMessage());
@@ -680,6 +696,7 @@ public class ExperimentService implements AutoCloseable {
 
                 state = result.state();
                 e.setState(state);
+                diagnosticEngine.observeStep(state);
                 stepsSinceSnapshot++;
                 offerArchivePoint(e, state, false);
 
@@ -739,6 +756,7 @@ public class ExperimentService implements AutoCloseable {
                         nearIterator.remove();
                     }
                 }
+                hasActiveEncounter = !activeEncounters.isEmpty();
 
                 if (!singleStep && stepsSinceSnapshot >= snapshotStepBudget) {
                     awaitSnapshotDeadline(nextSnapshotDeadline);
@@ -810,6 +828,7 @@ public class ExperimentService implements AutoCloseable {
                             elapsed);
                     e.setMetrics(em);
                     broadcastMetrics(e, state, em);
+                    publishDiagnostics(e, diagnosticEngine, state, em, hasActiveEncounter);
                     lastMetricsStep = state.step();
                     nextMetricsDeadline = advanceDeadline(
                             nextMetricsDeadline, now, METRICS_PERIOD_NANOS);
@@ -1103,6 +1122,30 @@ public class ExperimentService implements AutoCloseable {
             publishEncounter(e, enc, ev);
             iterator.remove();
         }
+    }
+
+    /** 发布本次指标周期产生的新诊断（FINAL 事件，可靠投递）。 */
+    private void publishDiagnostics(Experiment e, DiagnosticEngine engine, SimulationState state,
+            ExperimentMetrics em, boolean hasActiveEncounter) {
+        Metrics coreMetrics = new Metrics(
+                em.kineticEnergyJoules(), em.potentialEnergyJoules(), em.totalEnergyJoules(),
+                em.initialTotalEnergyJoules(), em.relativeEnergyDrift(), em.angularMomentum(),
+                em.linearMomentum(), em.minimumPairDistanceMeters(), em.minimumPairBodyIds());
+        List<Diagnostic> diagnostics = engine.evaluate(state, coreMetrics, hasActiveEncounter);
+        for (Diagnostic diagnostic : diagnostics) {
+            SimulationEvent ev = diagnosticEvent(e, state, diagnostic);
+            e.upsertEvent(ev);
+            publish(e, ExperimentMessageType.DIAGNOSTIC, ev);
+        }
+    }
+
+    private SimulationEvent diagnosticEvent(Experiment e, SimulationState state, Diagnostic diagnostic) {
+        return new SimulationEvent(
+                nextSequence(e), UUID.randomUUID().toString(),
+                SimulationEventType.DIAGNOSTIC, EventPhase.FINAL,
+                state.step(), state.simulationTimeSeconds(), Instant.now(),
+                diagnostic.summary(), null, null, null, null, null, null, null, null,
+                diagnostic);
     }
 
     private static Map<String, String> nameById(SimulationConfig config) {

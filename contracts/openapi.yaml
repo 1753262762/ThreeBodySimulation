@@ -4,7 +4,7 @@ info:
   description: |
     本地 N 体模拟"参数实验室"后端契约。所有数值使用 SI 单位：质量 kg、长度 m、速度 m/s、时间 s。
     单位换算（太阳质量、AU、km/s）由前端展示层负责，接口不接受非 SI 数值。
-  version: 1.0.0
+  version: 1.1.0
 servers:
   - url: http://127.0.0.1:8721/api/v1
     description: 本地服务
@@ -14,11 +14,13 @@ tags:
   - name: experiments
   - name: queue
   - name: exports
+  - name: history
+  - name: replay
 paths:
   /presets:
     get:
       tags: [presets]
-      summary: 获取内置 A-D 预设配置
+      summary: 获取内置 A-C 预设配置
       operationId: listPresets
       responses:
         '200':
@@ -270,6 +272,133 @@ paths:
                 $ref: '#/components/schemas/ReportData'
         '404':
           $ref: '#/components/responses/NotFound'
+  /experiments/{id}/history:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    get:
+      tags: [history]
+      summary: 查询已归档轨迹范围
+      description: |
+        返回闭区间 [fromStep, toStep] 内已持久化的归档点，按 step 升序。
+        超过 maxPoints 时均匀抽样并保留首尾点。运行中不强制 flush，currentState 独立返回，
+        归档点可能落后于权威状态（最终一致性）。参数非法或 toStep 超过当前权威步返回 400。
+      operationId: getExperimentHistory
+      parameters:
+        - name: fromStep
+          in: query
+          required: false
+          description: 起始步，默认 0，必须 >= 0
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: toStep
+          in: query
+          required: false
+          description: 结束步，默认当前可用最大步，必须 >= fromStep
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: maxPoints
+          in: query
+          required: false
+          description: 返回点数上限，默认 1000，范围 2～2000
+          schema:
+            type: integer
+            format: int32
+            minimum: 2
+            maximum: 2000
+      responses:
+        '200':
+          description: 历史轨迹范围
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HistoryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /experiments/{id}/replay-jobs:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+    post:
+      tags: [replay]
+      summary: 创建精确回放任务
+      description: |
+        targetStep 必须在 [0, currentStep] 内。目标等于当前权威状态或精确归档点立即返回
+        200/COMPLETED；需要重算时返回 202/QUEUED。待处理任务达到 8 个时返回 429。
+      operationId: createReplayJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayJobCreateRequest'
+      responses:
+        '200':
+          description: 精确命中，任务已完成
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayJob'
+        '202':
+          description: 需要重算，任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayJob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: 待处理回放任务已达上限
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+  /experiments/{id}/replay-jobs/{jobId}:
+    parameters:
+      - $ref: '#/components/parameters/ExperimentId'
+      - name: jobId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [replay]
+      summary: 查询回放任务进度与结果
+      operationId: getReplayJob
+      responses:
+        '200':
+          description: 回放任务
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayJob'
+        '404':
+          description: 任务不存在或已过期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+    delete:
+      tags: [replay]
+      summary: 删除回放任务
+      description: 运行中任务进入 CANCELLED，已终态任务保持原终态。
+      operationId: deleteReplayJob
+      responses:
+        '204':
+          description: 已删除
+        '404':
+          description: 任务不存在或已过期
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
 components:
   parameters:
     ExperimentId:
@@ -383,7 +512,7 @@ components:
       properties:
         key:
           type: string
-          enum: [A, B, C, D, E, F, G]
+          enum: [A, B, C]
         name:
           type: string
         description:
@@ -413,11 +542,21 @@ components:
             - MISSING_END_CONDITION
             - MAX_STEPS_OUT_OF_RANGE
             - TARGET_TIME_OUT_OF_RANGE
+            - TIME_STEP_TOO_LARGE
+            - INITIAL_DISTANCE_TOO_SMALL
+            - INITIAL_SPEED_HIGH
+            - SOFTENING_TOO_SMALL
+            - SOFTENING_TOO_LARGE
         message:
           type: string
         severity:
           type: string
           enum: [ERROR, WARNING]
+        riskLevel:
+          type: string
+          nullable: true
+          enum: [CAUTION, HIGH]
+          description: 仅 WARNING 填写；ERROR 为 null
     ValidationResult:
       type: object
       required: [valid, issues]
@@ -576,19 +715,123 @@ components:
           type: number
           format: double
           nullable: true
+    EventPhase:
+      type: string
+      enum: [ENTER, UPDATE, FINAL]
+      description: 近遇生命周期阶段；诊断事件固定为 FINAL
+    DiagnosticSeverity:
+      type: string
+      enum: [NOTICE, WARNING, CRITICAL]
+    DiagnosticCauseCategory:
+      type: string
+      enum:
+        - PHYSICAL_PHENOMENON
+        - PARAMETER_RISK
+        - NUMERICAL_ERROR
+        - MIXED
+    DiagnosticEvidence:
+      type: object
+      description: 诊断证据，字段均可空，只填写本次诊断相关的证据项。
+      properties:
+        timeStepSeconds:
+          type: number
+          format: double
+          nullable: true
+        softeningLengthMeters:
+          type: number
+          format: double
+          nullable: true
+        normalizedEnergyError:
+          type: number
+          format: double
+          nullable: true
+        relativeEnergyDrift:
+          type: number
+          format: double
+          nullable: true
+        minimumPairDistanceMeters:
+          type: number
+          format: double
+          nullable: true
+        speedRatioToEscape:
+          type: number
+          format: double
+          nullable: true
+        directionChangeDegrees:
+          type: number
+          format: double
+          nullable: true
+        rmsRadiusRatio:
+          type: number
+          format: double
+          nullable: true
+        outwardBodyFraction:
+          type: number
+          format: double
+          nullable: true
+        lastStableStep:
+          type: integer
+          format: int64
+          nullable: true
+        bodyIds:
+          type: array
+          nullable: true
+          items:
+            type: string
+    Diagnostic:
+      type: object
+      required: [code, severity, causeCategory, summary, likelyCauses, evidence, recommendations]
+      properties:
+        code:
+          type: string
+          enum:
+            - ENERGY_DRIFT
+            - POSSIBLE_ESCAPE
+            - SUDDEN_DEFLECTION
+            - RAPID_DISASSEMBLY
+            - NUMERICAL_INSTABILITY
+        severity:
+          $ref: '#/components/schemas/DiagnosticSeverity'
+        causeCategory:
+          $ref: '#/components/schemas/DiagnosticCauseCategory'
+        summary:
+          type: string
+        likelyCauses:
+          type: array
+          items:
+            type: string
+        evidence:
+          $ref: '#/components/schemas/DiagnosticEvidence'
+        recommendations:
+          type: array
+          items:
+            type: string
     SimulationEvent:
       type: object
       required: [sequence, type, step, simulationTimeSeconds, timestamp, message]
+      description: |
+        逻辑事件。sequence 是逻辑事件创建顺序，创建后不变；同一 eventId 的 UPDATE/FINAL 不重新分配该字段。
+        eventId 是稳定事件标识，新事件必填；旧 1.0 事件可为空，前端以 sequence 作为只读兼容键。
+        NUMERICAL_WARNING 为读取兼容保留枚举值，生产端不再新发，由 DIAGNOSTIC 取代。
       properties:
         sequence:
           type: integer
           format: int64
+          description: 逻辑事件创建顺序，创建后不变
+        eventId:
+          type: string
+          format: uuid
+          nullable: true
         type:
           type: string
-          enum: [NEAR_ENCOUNTER, STATUS_CHANGE, NUMERICAL_WARNING, ERROR]
+          enum: [NEAR_ENCOUNTER, STATUS_CHANGE, DIAGNOSTIC, NUMERICAL_WARNING, ERROR]
+        phase:
+          $ref: '#/components/schemas/EventPhase'
+          nullable: true
         step:
           type: integer
           format: int64
+          description: 当前修订对应的步
         simulationTimeSeconds:
           type: number
           format: double
@@ -605,6 +848,33 @@ components:
         distanceMeters:
           type: number
           format: double
+          nullable: true
+          description: 兼容字段，优先等于 closestDistanceMeters
+        thresholdMeters:
+          type: number
+          format: double
+          nullable: true
+        triggerDistanceMeters:
+          type: number
+          format: double
+          nullable: true
+        closestDistanceMeters:
+          type: number
+          format: double
+          nullable: true
+        closestStep:
+          type: integer
+          format: int64
+          nullable: true
+        closestSimulationTimeSeconds:
+          type: number
+          format: double
+          nullable: true
+        midpointPosition:
+          $ref: '#/components/schemas/Vector3'
+          nullable: true
+        diagnostic:
+          $ref: '#/components/schemas/Diagnostic'
           nullable: true
     TrajectoryInfo:
       type: object
@@ -775,6 +1045,107 @@ components:
         generatedAt:
           type: string
           format: date-time
+    HistoryResponse:
+      type: object
+      required: [points, archiveSampleStride, downsampled]
+      properties:
+        points:
+          type: array
+          description: 落在闭区间 [fromStep, toStep] 内的已持久化归档点，按 step 升序
+          items:
+            $ref: '#/components/schemas/SimulationState'
+        availableFromStep:
+          type: integer
+          format: int64
+          nullable: true
+        availableToStep:
+          type: integer
+          format: int64
+          nullable: true
+        archiveSampleStride:
+          type: integer
+          format: int64
+          description: 归档当前采样步长，不保证相邻点严格等距
+        downsampled:
+          type: boolean
+          description: 超过 maxPoints 时均匀抽样并保留区间首尾，此时为 true
+        currentState:
+          $ref: '#/components/schemas/SimulationState'
+          nullable: true
+          description: 当前权威状态，运行中可能领先于归档点（最终一致）
+    ReplayJobStatus:
+      type: string
+      enum: [QUEUED, RUNNING, COMPLETED, CANCELLED, FAILED]
+    ReplaySource:
+      type: string
+      nullable: true
+      enum: [CURRENT_STATE, ARCHIVE_EXACT, RECOMPUTED]
+    ReplayJobCreateRequest:
+      type: object
+      required: [targetStep]
+      properties:
+        targetStep:
+          type: integer
+          format: int64
+          minimum: 0
+          description: 目标步，必须在 [0, currentStep] 内
+    ReplayJob:
+      type: object
+      required:
+        - jobId
+        - experimentId
+        - targetStep
+        - status
+        - progress
+        - createdAt
+        - updatedAt
+        - expiresAt
+      properties:
+        jobId:
+          type: string
+          format: uuid
+        experimentId:
+          type: string
+          format: uuid
+        targetStep:
+          type: integer
+          format: int64
+        status:
+          $ref: '#/components/schemas/ReplayJobStatus'
+        source:
+          $ref: '#/components/schemas/ReplaySource'
+        baseStep:
+          type: integer
+          format: int64
+          nullable: true
+          description: 重算起点；RECOMPUTED 时使用 floor 归档步或 0
+        completedSteps:
+          type: integer
+          format: int64
+        totalSteps:
+          type: integer
+          format: int64
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        result:
+          $ref: '#/components/schemas/SimulationState'
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: 完成/取消结果在内存中的保留截止时间
     ApiError:
       type: object
       required: [code, message, timestamp]
@@ -790,6 +1161,8 @@ components:
             - UNSUPPORTED_ACTION_PAYLOAD
             - MALFORMED_REQUEST
             - STORAGE_FAILURE
+            - REPLAY_QUEUE_FULL
+            - REPLAY_JOB_NOT_FOUND
             - INTERNAL_ERROR
         message:
           type: string

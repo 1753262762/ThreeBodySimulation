@@ -12,7 +12,7 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
-import type { Preset, SimulationConfig, ValidationIssue, ValidationResult } from '../contracts'
+import type { Preset, PresetKey, SimulationConfig, ValidationIssue, ValidationResult } from '../contracts'
 import { ApiError, api } from '../lib/apiClient'
 import {
   configToDraft,
@@ -69,6 +69,7 @@ export const useDraftStore = defineStore('draft', () => {
   const presets = ref<Preset[]>([])
   const presetsLoading = ref(false)
   const presetsError = ref<string | null>(null)
+  const selectedPresetKey = ref<PresetKey | null>(null)
 
   const unitSystem = ref<UnitSystem>('ASTRONOMICAL')
   const draft = ref<ConfigDraft>(configToDraft(FALLBACK_CONFIG, 'ASTRONOMICAL'))
@@ -141,6 +142,7 @@ export const useDraftStore = defineStore('draft', () => {
   }
 
   function loadConfig(config: SimulationConfig, markApplied = false): void {
+    selectedPresetKey.value = null
     draft.value = configToDraft(config, unitSystem.value)
     serverValidation.value = null
     validationError.value = null
@@ -155,6 +157,7 @@ export const useDraftStore = defineStore('draft', () => {
     const preset = presets.value.find((item) => item.key === key)
     if (!preset) return
     loadConfig(preset.config)
+    selectedPresetKey.value = preset.key
   }
 
   function addBody(): void {
@@ -185,10 +188,14 @@ export const useDraftStore = defineStore('draft', () => {
   }
 
   async function loadPresets(): Promise<void> {
+    const fingerprintBeforeLoad = configFingerprint.value
     presetsLoading.value = true
     presetsError.value = null
     try {
       presets.value = await api.listPresets()
+      if (selectedPresetKey.value === null && configFingerprint.value === fingerprintBeforeLoad) {
+        applyPreset('A')
+      }
     } catch (error) {
       presetsError.value = error instanceof ApiError ? error.message : '加载预设失败。'
     } finally {
@@ -292,6 +299,7 @@ export const useDraftStore = defineStore('draft', () => {
     presets,
     presetsLoading,
     presetsError,
+    selectedPresetKey,
     unitSystem,
     draft,
     appliedConfig,

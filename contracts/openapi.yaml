@@ -20,7 +20,7 @@ paths:
   /presets:
     get:
       tags: [presets]
-      summary: 获取内置 A-C 预设配置
+      summary: 获取内置 A-J 预设配置
       operationId: listPresets
       responses:
         '200':
@@ -512,7 +512,7 @@ components:
       properties:
         key:
           type: string
-          enum: [A, B, C]
+          enum: [A, B, C, D, E, F, G, H, I, J]
         name:
           type: string
         description:

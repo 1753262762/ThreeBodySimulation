@@ -104,8 +104,12 @@ function doExport(): void {
     <div v-else-if="draftStore.presetsError" class="action-error">{{ draftStore.presetsError }}</div>
     <div v-else class="field">
       <label for="preset-select">初始配置</label>
-      <select id="preset-select" @change="draftStore.applyPreset(($event.target as HTMLSelectElement).value)">
-        <option value="" disabled selected>选择内置方案…</option>
+      <select
+        id="preset-select"
+        :value="draftStore.selectedPresetKey ?? ''"
+        @change="draftStore.applyPreset(($event.target as HTMLSelectElement).value)"
+      >
+        <option value="" disabled>选择内置方案…</option>
         <option v-for="preset in draftStore.presets" :key="preset.key" :value="preset.key">
           {{ preset.key }} · {{ preset.name }}
         </option>

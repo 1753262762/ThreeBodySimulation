@@ -4,5 +4,12 @@ package com.threebody.core;
 public enum PresetKey {
     A,
     B,
-    C
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J
 }

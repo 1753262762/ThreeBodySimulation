@@ -16,7 +16,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 获取内置 A-C 预设配置 */
+        /** 获取内置 A-J 预设配置 */
         get: operations["listPresets"];
         put?: never;
         post?: never;
@@ -308,7 +308,7 @@ export interface components {
         };
         Preset: {
             /** @enum {string} */
-            key: "A" | "B" | "C";
+            key: "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J";
             name: string;
             description: string;
             config: components["schemas"]["SimulationConfig"];

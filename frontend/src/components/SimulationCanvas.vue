@@ -10,6 +10,7 @@ import { BodyTrajectoryBuffer, TrajectoryBuffer } from '../lib/trajectoryBuffer'
 import { AdaptiveQualityController } from '../lib/renderQuality'
 import { projectGridPoint, visibleGridBounds } from '../lib/gridProjection'
 import { simplifyFlatPolylineIndices, trailRenderPolicy } from '../lib/trailSampling'
+import { fitCanvasView, resizeCanvasView } from '../lib/canvasViewport'
 
 type LegacyTrailCollection = Map<string, number[] | BodyTrajectoryBuffer>
 type TrailCollection = TrajectoryBuffer | LegacyTrailCollection
@@ -97,14 +98,15 @@ let trailDirty = true
 let dynamicDirty = true
 let resizeObserver: ResizeObserver | null = null
 let lastTrailDrawMs = Number.NEGATIVE_INFINITY
+let canvasSizeInitialized = false
 
 interface CachedTrailPath {
   coordinates: Float64Array
   pointCount: number
   retainedIndices: number[]
   path: Path2D | null
-  /** 投影使用的 scale，用于平移复用路径。 */
-  scale: number
+  /** 影响投影与抽稀结果的完整缓存签名。 */
+  signature: string
 }
 
 const trailPathCache = new Map<string, CachedTrailPath>()
@@ -120,6 +122,7 @@ let autoFitTarget = { scale: 1e-10, offsetX: 0, offsetY: 0 }
 let autoFitLastScale = 1e-10
 /** 悬停命中结果缓存。 */
 let hoverInfo: HoverBodyInfo | null = null
+let hoverPointerClient: { x: number; y: number } | null = null
 
 function displayNowMs(): number {
   if (typeof performance !== 'undefined' && Number.isFinite(performance.now())) return performance.now()
@@ -180,18 +183,39 @@ function resize(): void {
   const trailCanvas = trailCanvasRef.value
   const dynamicCanvas = dynamicCanvasRef.value
   if (!wrap || !backgroundCanvas || !trailCanvas || !dynamicCanvas) return
+  const previousDpr = dpr
+  const previousSize = { width: dynamicCanvas.width, height: dynamicCanvas.height }
   quality.setDevicePixelRatio(typeof window === 'undefined' ? 1 : window.devicePixelRatio)
   dpr = quality.effectiveDpr
   const rect = wrap.getBoundingClientRect()
   const width = Math.max(1, Math.floor(rect.width * dpr))
   const height = Math.max(1, Math.floor(rect.height * dpr))
+  if (canvasSizeInitialized && (width !== previousSize.width || height !== previousSize.height || dpr !== previousDpr)) {
+    view.value = resizeCanvasView(
+      view.value,
+      previousSize,
+      { width, height },
+      previousDpr,
+      dpr,
+    )
+  }
   for (const canvas of [backgroundCanvas, trailCanvas, dynamicCanvas]) {
     canvas.width = width
     canvas.height = height
     canvas.style.width = `${rect.width}px`
     canvas.style.height = `${rect.height}px`
   }
+  canvasSizeInitialized = true
   invalidateView()
+  refreshHover()
+}
+
+function projectWorldPoint(x: number, y: number, z: number): { horizontal: number; vertical: number } {
+  switch (props.projection) {
+    case 'XY': return { horizontal: x, vertical: y }
+    case 'XZ': return { horizontal: x, vertical: z }
+    case 'YZ': return { horizontal: y, vertical: z }
+  }
 }
 
 function project(x: number, y: number, z: number): [number, number] {
@@ -207,29 +231,16 @@ function fitToContent(): void {
   const canvas = dynamicCanvasRef.value
   const state = displayState()
   if (!canvas || !state || state.bodies.length === 0) return
-  let minX = Number.POSITIVE_INFINITY
-  let maxX = Number.NEGATIVE_INFINITY
-  let minY = Number.POSITIVE_INFINITY
-  let maxY = Number.NEGATIVE_INFINITY
-  for (const body of state.bodies) {
-    const [sx, sy] = project(body.position.x, body.position.y, body.position.z)
-    minX = Math.min(minX, sx); maxX = Math.max(maxX, sx)
-    minY = Math.min(minY, sy); maxY = Math.max(maxY, sy)
-  }
-  const padding = 0.2
-  const spanX = Math.max(1e-9, maxX - minX)
-  const spanY = Math.max(1e-9, maxY - minY)
-  const centerX = (minX + maxX) / 2
-  const centerY = (minY + maxY) / 2
-  const scale = Math.min(canvas.width / (spanX * (1 + padding)), canvas.height / (spanY * (1 + padding)))
-  view.value = {
-    scale,
-    offsetX: canvas.width / 2 - centerX * scale,
-    offsetY: canvas.height / 2 - centerY * scale,
-  }
-  autoFitLastScale = scale
-  autoFitTarget = { scale, offsetX: view.value.offsetX, offsetY: view.value.offsetY }
+  const fitted = fitCanvasView(
+    state.bodies.map((body) => projectWorldPoint(body.position.x, body.position.y, body.position.z)),
+    { width: canvas.width, height: canvas.height },
+  )
+  if (!fitted) return
+  view.value = fitted
+  autoFitLastScale = fitted.scale
+  autoFitTarget = { ...fitted }
   invalidateView()
+  refreshHover()
 }
 
 function drawGrid(ctx: CanvasRenderingContext2D): void {
@@ -330,8 +341,19 @@ function reusableTrailCache(bodyId: string, requiredPointCount: number): CachedT
     pointCount: 0,
     retainedIndices: [],
     path: null,
-    scale: Number.NaN,
+    signature: '',
   }
+}
+
+function trailCacheSignature(cutoffStep: number): string {
+  return [
+    props.trailVersion,
+    props.projection,
+    cutoffStep,
+    view.value.scale,
+    dpr,
+    quality.quality,
+  ].join(':')
 }
 
 function projectWorld(horizontal: number, vertical: number, scale: number): [number, number] {
@@ -345,7 +367,8 @@ function projectRingTrail(
 ): CachedTrailPath {
   const cached = reusableTrailCache(bodyId, points.capacity)
   const v = view.value
-  if (cached.scale === v.scale) return cached
+  const signature = trailCacheSignature(cutoffStep)
+  if (cached.signature === signature) return cached
   const coordinates = cached.coordinates
   const projection = props.projection
   let written = 0
@@ -358,7 +381,7 @@ function projectRingTrail(
     coordinates[written * 2 + 1] = py
     written += 1
   })
-  cached.scale = v.scale
+  cached.signature = signature
   return updateCachedTrailPath(cached, written)
 }
 
@@ -366,7 +389,8 @@ function projectLegacyTrail(bodyId: string, points: number[]): CachedTrailPath {
   const pointCount = Math.floor(points.length / 3)
   const cached = reusableTrailCache(bodyId, pointCount)
   const v = view.value
-  if (cached.scale === v.scale) return cached
+  const signature = trailCacheSignature(props.trailCutoffStep)
+  if (cached.signature === signature) return cached
   const coordinates = cached.coordinates
   const projection = props.projection
   for (let index = 0; index < pointCount; index += 1) {
@@ -380,7 +404,7 @@ function projectLegacyTrail(bodyId: string, points: number[]): CachedTrailPath {
     coordinates[index * 2] = px
     coordinates[index * 2 + 1] = py
   }
-  cached.scale = v.scale
+  cached.signature = signature
   return updateCachedTrailPath(cached, pointCount)
 }
 
@@ -785,6 +809,15 @@ function onWheel(event: WheelEvent): void {
   }
   // 任意模式滚轮只修改 scale；切回 FREE 语义下用户主动缩放。
   invalidateView()
+  hoverPointerClient = { x: event.clientX, y: event.clientY }
+  refreshHover()
+}
+
+function clearHover(): void {
+  hoverPointerClient = null
+  if (!hoverInfo) return
+  hoverInfo = null
+  emit('hover-body', null)
 }
 
 function onPointerDown(event: PointerEvent): void {
@@ -796,6 +829,7 @@ function onPointerDown(event: PointerEvent): void {
     origOffsetX: view.value.offsetX,
     origOffsetY: view.value.offsetY,
   }
+  clearHover()
   // 手动拖拽立即切回自由视角。
   if (props.cameraMode !== 'FREE') {
     emit('camera-mode-change', 'FREE')
@@ -827,9 +861,24 @@ function updateHover(event: PointerEvent): void {
     }
     return
   }
+  hoverPointerClient = { x: event.clientX, y: event.clientY }
+  refreshHover()
+}
+
+function refreshHover(): void {
+  const canvas = dynamicCanvasRef.value
+  const state = displayState()
+  const pointer = hoverPointerClient
+  if (!canvas || !state || !pointer || !props.hoverEnabled) {
+    if (hoverInfo) {
+      hoverInfo = null
+      emit('hover-body', null)
+    }
+    return
+  }
   const rect = canvas.getBoundingClientRect()
-  const mouseX = (event.clientX - rect.left) * dpr
-  const mouseY = (event.clientY - rect.top) * dpr
+  const mouseX = (pointer.x - rect.left) * dpr
+  const mouseY = (pointer.y - rect.top) * dpr
   const hitRadius = Math.max(10 * dpr, 4 * dpr + 4 * dpr)
   let best: HoverBodyInfo | null = null
   let bestDistance = Number.POSITIVE_INFINITY
@@ -850,7 +899,12 @@ function updateHover(event: PointerEvent): void {
   }
   const changed =
     (best === null) !== (hoverInfo === null) ||
-    (best !== null && hoverInfo !== null && best.bodyId !== hoverInfo.bodyId)
+    (best !== null && hoverInfo !== null && (
+      best.bodyId !== hoverInfo.bodyId ||
+      best.bodyState !== hoverInfo.bodyState ||
+      best.anchorCssX !== hoverInfo.anchorCssX ||
+      best.anchorCssY !== hoverInfo.anchorCssY
+    ))
   if (changed) {
     hoverInfo = best
     emit('hover-body', best)
@@ -860,6 +914,12 @@ function updateHover(event: PointerEvent): void {
 function onPointerUp(event: PointerEvent): void {
   dragging.value.active = false
   ;(event.target as HTMLElement).releasePointerCapture?.(event.pointerId)
+  if (props.hoverEnabled) updateHover(event)
+}
+
+function onPointerLeave(event: PointerEvent): void {
+  if (dragging.value.active) onPointerUp(event)
+  clearHover()
 }
 
 function onDoubleClick(): void {
@@ -962,10 +1022,7 @@ watch(
 watch(
   () => props.hoverEnabled,
   (enabled) => {
-    if (!enabled && hoverInfo) {
-      hoverInfo = null
-      emit('hover-body', null)
-    }
+    if (!enabled) clearHover()
   },
 )
 
@@ -983,7 +1040,7 @@ defineExpose({ fitToContent })
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
-      @pointerleave="hoverEnabled && onPointerUp"
+      @pointerleave="onPointerLeave"
       @dblclick="onDoubleClick"
     ></canvas>
     <canvas

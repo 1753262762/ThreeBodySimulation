@@ -15,6 +15,24 @@ function state(step: number, time: number, x: number, velocity = 1): SimulationS
 }
 
 describe('SnapshotBuffer', () => {
+  it('对非零 xyz/vxyz 全分量插值且不写回 SI 快照', () => {
+    const previous: SimulationState = {
+      step: 1,
+      simulationTimeSeconds: 0,
+      bodies: [{ id: 'a', position: { x: 0, y: 10, z: -10 }, velocity: { x: 2, y: -2, z: 4 } }],
+    }
+    const current: SimulationState = {
+      step: 2,
+      simulationTimeSeconds: 2,
+      bodies: [{ id: 'a', position: { x: 4, y: 6, z: -2 }, velocity: { x: 2, y: -2, z: 4 } }],
+    }
+    const before = structuredClone(current)
+    const interpolated = interpolateSnapshots(previous, current, 0.5)
+    expect(interpolated.bodies[0].position).toEqual({ x: 2, y: 8, z: -6 })
+    expect(interpolated.bodies[0].velocity).toEqual({ x: 2, y: -2, z: 4 })
+    expect(current).toEqual(before)
+  })
+
   it('保留前后帧并在到达时间区间内插值', () => {
     const buffer = new SnapshotBuffer({ interpolationDelayMs: 0 })
     const first = state(1, 0, 0)

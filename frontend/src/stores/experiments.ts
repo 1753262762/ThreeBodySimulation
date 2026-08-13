@@ -33,6 +33,12 @@ import {
   type TrajectoryPayload,
 } from '../lib/experimentSocket'
 import { PlaybackBuffer, type InterpolatedPoint } from '../lib/playbackBuffer'
+import {
+  DEFAULT_REPLAY_RATE,
+  adaptiveReplayStepsPerSecond,
+  clampTimelineStep,
+  type ReplayRate,
+} from '../lib/playbackTimeline'
 import { SnapshotBuffer } from '../lib/snapshotBuffer'
 import { TrajectoryBuffer } from '../lib/trajectoryBuffer'
 
@@ -60,9 +66,7 @@ const MAX_EVENTS = 1000
 const MAX_ALERTS = 20
 const REPLAY_POLL_MS = 200
 const HISTORY_DEBOUNCE_MS = 100
-/** 历史播放每秒推进当前可用范围的 1%。 */
-const REVIEW_TICK_MS = 250
-const REVIEW_RATE_PER_SECOND = 0.01
+export const EXACT_REPLAY_SETTLE_MS = 300
 
 /** 逻辑事件键：新事件用 eventId，旧 1.0 事件回退 sequence。 */
 export function eventKey(event: Pick<SimulationEvent, 'eventId' | 'sequence'>): string {
@@ -101,6 +105,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
   const playbackBufferRef = shallowRef<PlaybackBuffer | null>(null)
   const playbackMode = ref<PlaybackMode>('LIVE')
   const playbackPrecision = ref<PlaybackPrecision>('EXACT')
+  const replayRate = ref<ReplayRate>(DEFAULT_REPLAY_RATE)
   const cursorStep = ref(0)
   const cursorTimeSeconds = ref(0)
   const selectedEventId = ref<string | null>(null)
@@ -117,7 +122,12 @@ export const useExperimentsStore = defineStore('experiments', () => {
   let historyAbort: AbortController | null = null
   let historyDebounceTimer: ReturnType<typeof setTimeout> | null = null
   let replayPollTimer: ReturnType<typeof setTimeout> | null = null
-  let reviewTickTimer: ReturnType<typeof setInterval> | null = null
+  let exactSettleTimer: ReturnType<typeof setTimeout> | null = null
+  let reviewAnimationFrameId: number | null = null
+  let reviewLastFrameMs: number | null = null
+  let reviewCursorPosition = 0
+  let reviewStepsPerSecond = 1
+  let exactRequestGeneration = 0
   /** 当前持有的回放任务；离开回看、切换实验或卸载时 DELETE。 */
   let ownedReplayJobId: string | null = null
 
@@ -178,14 +188,15 @@ export const useExperimentsStore = defineStore('experiments', () => {
   }
 
   function clearPlaybackState(): void {
-    stopReplayPolling()
     stopReviewTicker()
+    cancelExactResolution()
     clearHistoryDebounce()
     historyAbort?.abort()
     historyAbort = null
     playbackBufferRef.value = null
     playbackMode.value = 'LIVE'
     playbackPrecision.value = 'EXACT'
+    replayRate.value = DEFAULT_REPLAY_RATE
     cursorStep.value = 0
     cursorTimeSeconds.value = 0
     selectedEventId.value = null
@@ -397,19 +408,34 @@ export const useExperimentsStore = defineStore('experiments', () => {
     }
   }
 
-  function scheduleReplayPoll(id: string): void {
+  function clearExactSettle(): void {
+    if (exactSettleTimer !== null) {
+      clearTimeout(exactSettleTimer)
+      exactSettleTimer = null
+    }
+  }
+
+  function latestPlaybackStep(): number {
+    return liveState.value?.step ?? current.value?.progress.step ?? 0
+  }
+
+  function earliestPlaybackStep(): number {
+    return Math.min(availableFromStep.value ?? 0, latestPlaybackStep())
+  }
+
+  function scheduleReplayPoll(id: string, generation: number, jobId: string): void {
     stopReplayPolling()
     replayPollTimer = setTimeout(() => {
       replayPollTimer = null
-      void pollReplayJob(id)
+      void pollReplayJob(id, generation, jobId)
     }, REPLAY_POLL_MS)
   }
 
-  async function pollReplayJob(id: string): Promise<void> {
-    const job = activeReplayJob.value
-    if (!job) return
+  async function pollReplayJob(id: string, generation: number, jobId: string): Promise<void> {
+    if (generation !== exactRequestGeneration || activeReplayJob.value?.jobId !== jobId) return
     try {
-      const updated = await api.getReplayJob(id, job.jobId)
+      const updated = await api.getReplayJob(id, jobId)
+      if (generation !== exactRequestGeneration) return
       activeReplayJob.value = updated
       if (updated.status === 'COMPLETED' && updated.result) {
         playbackBufferRef.value?.setExact(updated.result)
@@ -422,9 +448,10 @@ export const useExperimentsStore = defineStore('experiments', () => {
         historyError.value = updated.error ?? '精确重建任务失败。'
         stopReplayPolling()
       } else {
-        scheduleReplayPoll(id)
+        scheduleReplayPoll(id, generation, jobId)
       }
     } catch (error) {
+      if (generation !== exactRequestGeneration) return
       if (error instanceof ApiError && error.isNotFound) {
         playbackPrecision.value = 'ERROR'
         historyError.value = '回放任务已过期或不存在。'
@@ -433,7 +460,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
         stopReplayPolling()
       } else {
         // 网络抖动：继续轮询。
-        scheduleReplayPoll(id)
+        scheduleReplayPoll(id, generation, jobId)
       }
     }
   }
@@ -449,14 +476,24 @@ export const useExperimentsStore = defineStore('experiments', () => {
     }
   }
 
-  /** 创建精确重建任务并轮询；新任务取消并 DELETE 旧任务。 */
-  async function requestExactStep(id: string, targetStep: number): Promise<void> {
+  function cancelExactResolution(id = current.value?.id): Promise<void> {
+    clearExactSettle()
     stopReplayPolling()
-    await deleteOwnedReplayJob(id)
+    exactRequestGeneration += 1
+    activeReplayJob.value = null
+    return id ? deleteOwnedReplayJob(id) : Promise.resolve()
+  }
+
+  async function performExactStep(id: string, targetStep: number, generation: number): Promise<void> {
+    if (generation !== exactRequestGeneration) return
     playbackPrecision.value = 'RESOLVING'
     historyError.value = null
     try {
       const job = await api.createReplayJob(id, targetStep)
+      if (generation !== exactRequestGeneration) {
+        void api.deleteReplayJob(id, job.jobId)
+        return
+      }
       activeReplayJob.value = job
       ownedReplayJobId = job.jobId
       if (job.status === 'COMPLETED' && job.result) {
@@ -465,9 +502,10 @@ export const useExperimentsStore = defineStore('experiments', () => {
         cursorStep.value = job.result.step
         cursorTimeSeconds.value = job.result.simulationTimeSeconds
       } else {
-        scheduleReplayPoll(id)
+        scheduleReplayPoll(id, generation, job.jobId)
       }
     } catch (error) {
+      if (generation !== exactRequestGeneration) return
       if (error instanceof ApiError && error.code === 'REPLAY_QUEUE_FULL') {
         playbackPrecision.value = 'ERROR'
         historyError.value = '精确重建队列已满，请稍后重试。'
@@ -479,6 +517,29 @@ export const useExperimentsStore = defineStore('experiments', () => {
         historyError.value = '精确重建请求失败。'
       }
     }
+  }
+
+  /** 立即创建精确重建任务；事件定位与显式重试使用。 */
+  async function requestExactStep(id: string, targetStep: number): Promise<void> {
+    const cleanup = cancelExactResolution(id)
+    const generation = exactRequestGeneration
+    await cleanup
+    await performExactStep(id, targetStep, generation)
+  }
+
+  /** 拖动、单帧或暂停后只解析最终游标，连续操作会重置 300ms 定时器。 */
+  function settleReviewCursor(): void {
+    const id = current.value?.id
+    if (!id || playbackMode.value === 'LIVE') return
+    const cleanup = cancelExactResolution(id)
+    const generation = exactRequestGeneration
+    const targetStep = cursorStep.value
+    scheduleFocusRange(id, targetStep)
+    exactSettleTimer = setTimeout(async () => {
+      exactSettleTimer = null
+      await cleanup
+      void performExactStep(id, targetStep, generation)
+    }, EXACT_REPLAY_SETTLE_MS)
   }
 
   /** 事件定位：优先 closestStep，缺失时使用 step。 */
@@ -494,7 +555,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     if (!experiment) return
     playbackMode.value = 'REVIEW_PAUSED'
     stopReviewTicker()
-    cursorStep.value = Math.max(0, Math.floor(targetStep))
+    cursorStep.value = clampTimelineStep(targetStep, earliestPlaybackStep(), latestPlaybackStep())
     cursorTimeSeconds.value = cursorStep.value * experiment.config.timeStepSeconds
     scheduleFocusRange(id, cursorStep.value)
     await requestExactStep(id, cursorStep.value)
@@ -503,11 +564,10 @@ export const useExperimentsStore = defineStore('experiments', () => {
   /** 游标进入最新权威步一个积分步以内时自动返回 LIVE。 */
   function maybeAutoReturnToLive(): boolean {
     const latest = liveState.value?.step ?? current.value?.progress.step ?? Number.POSITIVE_INFINITY
-    if (playbackMode.value !== 'LIVE' && cursorStep.value >= latest - 1) {
+    if (playbackMode.value !== 'LIVE' && cursorStep.value >= latest) {
       const id = current.value?.id
-      stopReplayPolling()
       stopReviewTicker()
-      if (id) void deleteOwnedReplayJob(id)
+      cancelExactResolution(id)
       playbackMode.value = 'LIVE'
       playbackPrecision.value = 'EXACT'
       selectedEventId.value = null
@@ -519,6 +579,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
 
   /** pointerdown 进入回看并冻结游标；只查缓存，不发请求。 */
   function beginReviewScrub(step: number): void {
+    cancelExactResolution()
     if (playbackMode.value === 'LIVE') {
       playbackMode.value = 'REVIEW_PAUSED'
     }
@@ -529,66 +590,115 @@ export const useExperimentsStore = defineStore('experiments', () => {
   /** pointermove 合帧后只查缓存更新游标，不发请求、不触发精确重建。 */
   function seekCursorFromCache(step: number): void {
     if (playbackMode.value === 'LIVE') return
-    const bounded = Math.max(0, Math.floor(step))
+    const bounded = clampTimelineStep(step, earliestPlaybackStep(), latestPlaybackStep())
     cursorStep.value = bounded
     if (maybeAutoReturnToLive()) return
     const point = playbackBufferRef.value?.interpolateAt(bounded)
     cursorTimeSeconds.value = point?.simulationTimeSeconds ?? cursorTimeSeconds.value
-    playbackPrecision.value = point?.approximate ? 'APPROXIMATE' : playbackPrecision.value
+    playbackPrecision.value = point?.approximate ? 'APPROXIMATE' : 'EXACT'
   }
 
   /** 单击跳转：总范围 1%，至少一步。 */
   function jumpByPercent(direction: -1 | 1): void {
-    const upper = availableToStep.value ?? cursorStep.value
-    const lower = availableFromStep.value ?? 0
-    const range = Math.max(1, plannedEndStep.value)
+    if (playbackMode.value === 'LIVE') return
+    cancelExactResolution()
+    const upper = latestPlaybackStep()
+    const lower = earliestPlaybackStep()
+    const range = Math.max(1, upper - lower)
     const delta = Math.max(1, Math.ceil(range * 0.01))
-    const target = cursorStep.value + direction * delta
-    cursorStep.value = Math.min(upper, Math.max(lower, target))
-    cursorTimeSeconds.value =
-      (playbackBufferRef.value?.interpolateAt(cursorStep.value)?.simulationTimeSeconds) ??
-      cursorTimeSeconds.value
+    seekCursorFromCache(cursorStep.value + direction * delta)
+    settleReviewCursor()
+  }
+
+  function stepReviewFrame(direction: -1 | 1): void {
+    const upper = latestPlaybackStep()
+    const lower = earliestPlaybackStep()
+    const stride = Math.max(1, archiveSampleStride.value)
+    if (playbackMode.value === 'LIVE') {
+      if (direction > 0 || upper <= lower) return
+      playbackMode.value = 'REVIEW_PAUSED'
+      cursorStep.value = upper
+      cursorTimeSeconds.value = liveState.value?.simulationTimeSeconds ?? cursorTimeSeconds.value
+    }
+    stopReviewTicker()
+    cancelExactResolution()
+    seekCursorFromCache(cursorStep.value + direction * stride)
+    settleReviewCursor()
+  }
+
+  function requestNextReviewFrame(): void {
+    if (typeof requestAnimationFrame !== 'function') return
+    reviewAnimationFrameId = requestAnimationFrame(onReviewAnimationFrame)
+  }
+
+  function onReviewAnimationFrame(nowMs: number): void {
+    reviewAnimationFrameId = null
+    if (playbackMode.value !== 'REVIEW_PLAYING') return
+    if (reviewLastFrameMs === null) {
+      reviewLastFrameMs = nowMs
+      requestNextReviewFrame()
+      return
+    }
+    const elapsedSeconds = Math.max(0, (nowMs - reviewLastFrameMs) / 1000)
+    reviewLastFrameMs = nowMs
+    reviewCursorPosition += elapsedSeconds * reviewStepsPerSecond
+    const upper = latestPlaybackStep()
+    if (reviewCursorPosition >= upper) {
+      returnToLive()
+      return
+    }
+    seekCursorFromCache(Math.floor(reviewCursorPosition))
+    requestNextReviewFrame()
   }
 
   function startReviewPlayback(): void {
     if (playbackMode.value === 'LIVE') return
-    playbackMode.value = 'REVIEW_PLAYING'
+    const lower = earliestPlaybackStep()
+    const upper = latestPlaybackStep()
+    if (cursorStep.value >= upper) {
+      returnToLive()
+      return
+    }
     stopReviewTicker()
-    reviewTickTimer = setInterval(() => {
-      const upper = availableToStep.value ?? cursorStep.value
-      const lower = availableFromStep.value ?? 0
-      const range = Math.max(1, upper - lower)
-      const perSecond = Math.max(1, Math.ceil(range * REVIEW_RATE_PER_SECOND))
-      const delta = Math.max(1, Math.round((perSecond * REVIEW_TICK_MS) / 1000))
-      const target = Math.min(upper, cursorStep.value + delta)
-      cursorStep.value = target
-      cursorTimeSeconds.value =
-        playbackBufferRef.value?.interpolateAt(target)?.simulationTimeSeconds ?? cursorTimeSeconds.value
-      if (target >= upper) {
-        playbackMode.value = 'REVIEW_PAUSED'
-        stopReviewTicker()
-      }
-    }, REVIEW_TICK_MS)
+    cancelExactResolution()
+    reviewCursorPosition = cursorStep.value
+    reviewStepsPerSecond = adaptiveReplayStepsPerSecond(lower, upper, replayRate.value)
+    reviewLastFrameMs = null
+    playbackMode.value = 'REVIEW_PLAYING'
+    requestNextReviewFrame()
   }
 
   function pauseReviewPlayback(): void {
     if (playbackMode.value === 'REVIEW_PLAYING') playbackMode.value = 'REVIEW_PAUSED'
     stopReviewTicker()
+    settleReviewCursor()
   }
 
   function stopReviewTicker(): void {
-    if (reviewTickTimer !== null) {
-      clearInterval(reviewTickTimer)
-      reviewTickTimer = null
+    if (reviewAnimationFrameId !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(reviewAnimationFrameId)
+      reviewAnimationFrameId = null
+    }
+    reviewLastFrameMs = null
+  }
+
+  function setReplayRate(rate: ReplayRate): void {
+    replayRate.value = rate
+    if (playbackMode.value === 'REVIEW_PLAYING') {
+      reviewStepsPerSecond = adaptiveReplayStepsPerSecond(
+        earliestPlaybackStep(),
+        latestPlaybackStep(),
+        replayRate.value,
+      )
+      reviewLastFrameMs = null
     }
   }
 
   /** 返回实时：取消回放任务、清除选中历史态，恢复 SnapshotBuffer 展示。 */
   function returnToLive(): void {
     const id = current.value?.id
-    stopReplayPolling()
     stopReviewTicker()
-    if (id) void deleteOwnedReplayJob(id)
+    cancelExactResolution(id)
     playbackMode.value = 'LIVE'
     playbackPrecision.value = 'EXACT'
     selectedEventId.value = null
@@ -599,13 +709,15 @@ export const useExperimentsStore = defineStore('experiments', () => {
   /** 切换实验、重启或删除前统一取消任务并清空历史状态。 */
   function cancelReplayAndCleanup(): void {
     const id = current.value?.id
-    stopReplayPolling()
     stopReviewTicker()
+    cancelExactResolution(id)
     clearHistoryDebounce()
     historyAbort?.abort()
     historyAbort = null
-    if (id) void deleteOwnedReplayJob(id)
-    activeReplayJob.value = null
+    if (playbackMode.value !== 'LIVE') {
+      const point = playbackBufferRef.value?.interpolateAt(cursorStep.value)
+      playbackPrecision.value = point?.approximate ? 'APPROXIMATE' : 'EXACT'
+    }
   }
 
   function connect(id: string): void {
@@ -838,6 +950,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     playbackBufferRef,
     playbackMode,
     playbackPrecision,
+    replayRate,
     cursorStep,
     cursorTimeSeconds,
     selectedEventId,
@@ -877,10 +990,13 @@ export const useExperimentsStore = defineStore('experiments', () => {
     enterReview,
     seekCursorFromCache,
     beginReviewScrub,
+    settleReviewCursor,
     maybeAutoReturnToLive,
     jumpByPercent,
+    stepReviewFrame,
     startReviewPlayback,
     pauseReviewPlayback,
+    setReplayRate,
     returnToLive,
     cancelReplayAndCleanup,
     clearPlaybackState,

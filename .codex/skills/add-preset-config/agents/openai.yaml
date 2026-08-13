@@ -1,0 +1,4 @@
+interface:
+  display_name: "添加内置配置"
+  short_description: "将 JSON 配置安全加入 Three Body Lab 内置预设"
+  default_prompt: "使用 $add-preset-config 将这个 JSON 配置加入项目内置预设并完成验证。"

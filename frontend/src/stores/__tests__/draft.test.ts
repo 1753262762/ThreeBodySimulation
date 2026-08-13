@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import type { ValidationResult } from '../../contracts'
+import type { Preset, ValidationResult } from '../../contracts'
 import { api } from '../../lib/apiClient'
 import { useDraftStore } from '../draft'
 
@@ -25,6 +25,48 @@ function warningResult(): ValidationResult {
 describe('draft store（F2/F3 提交流）', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('加载内置方案后默认选择并应用方案 A', async () => {
+    const store = useDraftStore()
+    const config = store.localConversion.config!
+    const presetA: Preset = {
+      key: 'A',
+      name: '方案 A',
+      description: '默认方案',
+      config: { ...config, name: '方案 A 默认配置' },
+    }
+    vi.spyOn(api, 'listPresets').mockResolvedValue([presetA])
+
+    await store.loadPresets()
+
+    expect(store.selectedPresetKey).toBe('A')
+    expect(store.localConversion.config?.name).toBe('方案 A 默认配置')
+  })
+
+  it('预设加载完成前已有编辑时不覆盖用户草稿', async () => {
+    let resolvePresets!: (presets: Preset[]) => void
+    vi.spyOn(api, 'listPresets').mockReturnValue(new Promise((resolve) => {
+      resolvePresets = resolve
+    }))
+    const store = useDraftStore()
+    const loading = store.loadPresets()
+
+    store.draft.name = '用户正在编辑的配置'
+    resolvePresets([{
+      key: 'A',
+      name: '方案 A',
+      description: '默认方案',
+      config: { ...store.localConversion.config!, name: '方案 A 默认配置' },
+    }])
+    await loading
+
+    expect(store.selectedPresetKey).toBeNull()
+    expect(store.localConversion.config?.name).toBe('用户正在编辑的配置')
   })
 
   it('默认配置 canSubmit 为 true，本地错误会锁死按钮', () => {

@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SimulationState } from '../../contracts'
+import { BodyTrajectoryBuffer } from '../../lib/trajectoryBuffer'
 import SimulationCanvas from '../SimulationCanvas.vue'
 
 /**
@@ -50,12 +51,19 @@ const state: SimulationState = {
 }
 
 describe('SimulationCanvas', () => {
+  let scheduledFrame: FrameRequestCallback | null
+
   beforeEach(() => {
+    vi.clearAllMocks()
+    scheduledFrame = null
     vi.stubGlobal('ResizeObserver', class {
       observe() {}
       disconnect() {}
     })
-    vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      scheduledFrame = callback
+      return 1
+    }))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context)
   })
@@ -78,6 +86,44 @@ describe('SimulationCanvas', () => {
 
     expect(wrapper.get('canvas').attributes('aria-label')).toContain(`${projection} 投影视图`)
     expect(context.arc).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('同一缩放下按版本、投影和回看 cutoff 重建轨迹缓存', async () => {
+    const trail = new BodyTrajectoryBuffer(8)
+    trail.append(1, 1, 2, 3)
+    trail.append(2, 2, 4, 8)
+    const wrapper = mount(SimulationCanvas, {
+      props: {
+        state,
+        trailsPerBody: new Map([['a', trail]]),
+        trailVersion: 1,
+        projection: 'XY',
+        showTrails: true,
+        showLabels: false,
+        showGrid: false,
+        bodyNames: new Map(),
+        bodyColors: new Map([['a', '#ffffff']]),
+        nearestPairIds: null,
+      },
+    })
+    scheduledFrame?.(1000)
+
+    trail.append(3, 3, 6, 12)
+    vi.mocked(context.lineTo).mockClear()
+    await wrapper.setProps({ trailVersion: 2 })
+    scheduledFrame?.(2000)
+    expect(context.lineTo).toHaveBeenCalledTimes(2)
+
+    vi.mocked(context.lineTo).mockClear()
+    await wrapper.setProps({ trailCutoffStep: 1 })
+    scheduledFrame?.(3000)
+    expect(context.lineTo).not.toHaveBeenCalled()
+
+    vi.mocked(context.lineTo).mockClear()
+    await wrapper.setProps({ trailCutoffStep: 3, projection: 'XZ' })
+    scheduledFrame?.(4000)
+    expect(context.lineTo).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 })

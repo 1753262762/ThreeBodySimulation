@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import ParameterEditor from '../components/ParameterEditor.vue'
 import SimulationCanvas from '../components/SimulationCanvas.vue'
@@ -17,6 +17,7 @@ import { getCanvasPalette } from '../lib/theme'
 import { formatScientific, formatSimulationTime } from '../lib/format'
 import { fromSi, unitLabel } from '../lib/units'
 import type { HoverBodyInfo } from '../lib/canvasHover'
+import type { SceneCameraPreset } from '../lib/scene3d'
 import {
   LIVE_TRAIL_LIMIT,
   isTerminalStatus,
@@ -29,6 +30,14 @@ const draftStore = useDraftStore()
 const experimentsStore = useExperimentsStore()
 const preferences = usePreferencesStore()
 const router = useRouter()
+
+const SimulationScene3D = defineAsyncComponent(() => import('../components/SimulationScene3D.vue'))
+type ViewMode = '2d' | '3d'
+interface Scene3DExposed {
+  resetCamera(): void
+  setCameraPreset(preset: SceneCameraPreset): void
+}
+const SCENE_3D_PRESETS: readonly SceneCameraPreset[] = ['FREE', 'XY', 'XZ', 'YZ']
 
 const projection = computed(() => preferences.projection)
 const apiModeLabel = (import.meta.env.VITE_API_MODE ?? 'live') === 'mock' ? 'Mock · 内存模拟' : 'Live · Java 服务'
@@ -43,49 +52,6 @@ const metricSamples = computed<MetricSample[]>(() => experimentsStore.metricSamp
 
 const step = computed(() => experimentsStore.liveState?.step ?? experimentsStore.current?.progress.step ?? 0)
 const simTime = computed(() => experimentsStore.liveState?.simulationTimeSeconds ?? experimentsStore.current?.progress.simulationTimeSeconds ?? 0)
-
-const progressState = computed<{ ratio: number; detail: string } | null>(() => {
-  const experiment = activeExperiment.value
-  if (!experiment) return null
-
-  const candidates: Array<{ ratio: number; detail: string }> = []
-  const maxSteps = experiment.config.maxSteps
-  const targetTime = experiment.config.targetSimulationTimeSeconds
-  if (maxSteps !== null && maxSteps !== undefined && maxSteps > 0) {
-    candidates.push({
-      ratio: step.value / maxSteps,
-      detail: step.value.toLocaleString() + ' / ' + maxSteps.toLocaleString() + ' 步',
-    })
-  }
-  if (targetTime !== null && targetTime !== undefined && targetTime > 0) {
-    candidates.push({
-      ratio: simTime.value / targetTime,
-      detail: simTime.value.toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' / ' + targetTime.toLocaleString(undefined, { maximumFractionDigits: 1 }) + ' s',
-    })
-  }
-  if (candidates.length === 0 && experiment.progress.completionRatio !== null
-      && experiment.progress.completionRatio !== undefined) {
-    candidates.push({
-      ratio: experiment.progress.completionRatio,
-      detail: '步骤 ' + step.value.toLocaleString(),
-    })
-  }
-  if (candidates.length === 0) return null
-
-  const closest = candidates.reduce((best, candidate) => candidate.ratio > best.ratio ? candidate : best)
-  return {
-    ratio: Math.max(0, Math.min(1, closest.ratio)),
-    detail: closest.detail,
-  }
-})
-
-const progressRatio = computed(() => progressState.value?.ratio ?? null)
-const progressPercent = computed(() => progressRatio.value === null ? null : progressRatio.value * 100)
-const progressLabel = computed(() => {
-  if (progressPercent.value === null) return '进行中'
-  if (progressPercent.value > 0 && progressPercent.value < 0.01) return '<0.01%'
-  return progressPercent.value.toFixed(progressPercent.value < 1 ? 2 : 1) + '%'
-})
 
 const bodyNames = computed(() => {
   const map = new Map<string, string>()
@@ -147,7 +113,10 @@ const distanceSeries = computed(() => [{
 }])
 
 const activeTab = ref<'parameters' | 'queue'>('parameters')
+const sidebarCollapsed = ref(false)
 const sceneExpanded = ref(false)
+const viewMode = ref<ViewMode>('2d')
+const scene3dPreset = ref<SceneCameraPreset>('FREE')
 
 const connectionLabel = computed(() => {
   switch (experimentsStore.connectionState) {
@@ -184,6 +153,17 @@ const connectionClass = computed(() => {
 
 function toggleSceneExpanded(): void {
   sceneExpanded.value = !sceneExpanded.value
+  requestAnimationFrame(() => fitCanvas())
+}
+
+function toggleSidebar(): void {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  requestAnimationFrame(() => fitCanvas())
+}
+
+function switchSidebarTab(): void {
+  activeTab.value = activeTab.value === 'parameters' ? 'queue' : 'parameters'
+  sidebarCollapsed.value = false
   requestAnimationFrame(() => fitCanvas())
 }
 
@@ -375,6 +355,9 @@ const hoverEnabled = computed(() => {
 })
 
 const canvasPalette = computed(() => getCanvasPalette(preferences.resolvedTheme))
+const rendererSnapshotBuffer = computed(() => (
+  experimentsStore.isReviewing ? null : experimentsStore.snapshotBuffer
+))
 
 // ---- 事件面板 ----
 function onSelectEvent(event: SimulationEvent): void {
@@ -390,8 +373,24 @@ function encounterDistance(event: SimulationEvent): string {
 }
 
 const canvasRef = ref<InstanceType<typeof SimulationCanvas> | null>(null)
+const scene3dRef = ref<Scene3DExposed | null>(null)
 function fitCanvas(): void {
   canvasRef.value?.fitToContent()
+}
+
+function setViewMode(mode: ViewMode): void {
+  viewMode.value = mode
+  hovered.value = null
+}
+
+function set3dCameraPreset(preset: SceneCameraPreset): void {
+  scene3dPreset.value = preset
+  scene3dRef.value?.setCameraPreset(preset)
+}
+
+function reset3dCamera(): void {
+  scene3dPreset.value = 'FREE'
+  scene3dRef.value?.resetCamera()
 }
 
 function onDismiss(key: string): void {
@@ -411,6 +410,7 @@ function startPolling(): void {
 startPolling()
 
 onUnmounted(() => {
+  experimentsStore.cancelReplayAndCleanup()
   experimentsStore.disconnect()
   if (pollTimer) {
     clearInterval(pollTimer)
@@ -436,17 +436,24 @@ onUnmounted(() => {
       </span>
       <div class="lab-header-actions">
         <ThemeSelector />
-        <button @click="activeTab = activeTab === 'parameters' ? 'queue' : 'parameters'">
+        <button
+          type="button"
+          :aria-pressed="sidebarCollapsed"
+          @click="toggleSidebar"
+        >
+          {{ sidebarCollapsed ? '展开侧栏' : '收起侧栏' }}
+        </button>
+        <button type="button" @click="switchSidebarTab">
           {{ activeTab === 'parameters' ? '切换到队列' : '切换到参数' }}
         </button>
       </div>
     </header>
 
-    <section class="lab-layout">
-      <aside v-show="activeTab === 'parameters'" class="lab-parameters scrollable">
+    <section class="lab-layout" :class="{ 'is-sidebar-collapsed': sidebarCollapsed }">
+      <aside v-show="!sidebarCollapsed && activeTab === 'parameters'" class="lab-parameters scrollable">
         <ParameterEditor @apply="applyAndCreate" />
       </aside>
-      <aside v-show="activeTab === 'queue'" class="lab-parameters scrollable">
+      <aside v-show="!sidebarCollapsed && activeTab === 'queue'" class="lab-parameters scrollable">
         <QueuePanel />
       </aside>
 
@@ -455,27 +462,33 @@ onUnmounted(() => {
           <header>
             <div class="scene-header-left">
               <span>模拟视图</span>
-              <small>{{ projection }} 投影 · 最多 {{ LIVE_TRAIL_LIMIT }} 轨迹点/体</small>
+              <div class="scene-mode-toggle" role="group" aria-label="视图维度">
+                <button type="button" :class="{ active: viewMode === '2d' }" :aria-pressed="viewMode === '2d'" @click="setViewMode('2d')">2D</button>
+                <button type="button" :class="{ active: viewMode === '3d' }" :aria-pressed="viewMode === '3d'" @click="setViewMode('3d')">3D</button>
+              </div>
+              <small>{{ viewMode === '2d' ? projection + ' 投影' : '空间视图' }} · 最多 {{ LIVE_TRAIL_LIMIT }} 轨迹点/体</small>
             </div>
             <div class="scene-header-right">
-              <button :class="{ active: projection === 'XY' }" @click="setPlane('XY')">XY</button>
-              <button :class="{ active: projection === 'XZ' }" @click="setPlane('XZ')">XZ</button>
-              <button :class="{ active: projection === 'YZ' }" @click="setPlane('YZ')">YZ</button>
+              <template v-if="viewMode === '2d'">
+                <button :class="{ active: projection === 'XY' }" @click="setPlane('XY')">XY</button>
+                <button :class="{ active: projection === 'XZ' }" @click="setPlane('XZ')">XZ</button>
+                <button :class="{ active: projection === 'YZ' }" @click="setPlane('YZ')">YZ</button>
+              </template>
               <button @click="preferences.toggleTrails()">轨迹 {{ preferences.showTrails ? '开' : '关' }}</button>
-              <button @click="preferences.toggleLabels()">标签 {{ preferences.showLabels ? '开' : '关' }}</button>
+              <button v-if="viewMode === '2d'" @click="preferences.toggleLabels()">标签 {{ preferences.showLabels ? '开' : '关' }}</button>
               <button @click="preferences.toggleGrid()">网格 {{ preferences.showGrid ? '开' : '关' }}</button>
-              <button @click="preferences.togglePerformanceHud()">性能 HUD {{ preferences.showPerformanceHud ? '开' : '关' }}</button>
-              <button @click="fitCanvas">适应窗口</button>
+              <button v-if="viewMode === '2d'" @click="preferences.togglePerformanceHud()">性能 HUD {{ preferences.showPerformanceHud ? '开' : '关' }}</button>
+              <button v-if="viewMode === '2d'" @click="fitCanvas">适应窗口</button>
+              <button v-else @click="reset3dCamera">重置相机</button>
               <button
-                class="expand-scene-button"
-                :class="{ active: sceneExpanded }"
+                class="monitor-toggle-button"
                 :aria-pressed="sceneExpanded"
-                :title="sceneExpanded ? '恢复下方天体状态和指标' : '压缩下方天体状态，放大模拟视图'"
+                :title="sceneExpanded ? '展开下方监控区' : '收起下方监控区'"
                 @click="toggleSceneExpanded"
-              >{{ sceneExpanded ? '还原布局' : '放大视图' }}</button>
+              >{{ sceneExpanded ? '展开监控区' : '收起监控区' }}</button>
             </div>
           </header>
-          <div class="scene-camera-bar" role="group" aria-label="观察模式">
+          <div v-if="viewMode === '2d'" class="scene-camera-bar" role="group" aria-label="观察模式">
             <span class="scene-camera-label">观察</span>
             <button
               v-for="mode in CAMERA_MODES"
@@ -498,11 +511,24 @@ onUnmounted(() => {
               </option>
             </select>
           </div>
+          <div v-else class="scene-camera-bar" role="group" aria-label="三维相机视角">
+            <span class="scene-camera-label">视角</span>
+            <button
+              v-for="preset in SCENE_3D_PRESETS"
+              :key="preset"
+              type="button"
+              class="camera-mode-btn"
+              :class="{ active: scene3dPreset === preset }"
+              :aria-pressed="scene3dPreset === preset"
+              @click="set3dCameraPreset(preset)"
+            >{{ preset === 'FREE' ? 'Free' : preset }}</button>
+          </div>
           <div class="scene-canvas-zone">
             <SimulationCanvas
+              v-if="viewMode === '2d'"
               ref="canvasRef"
               :state="displayState"
-              :snapshot-buffer="experimentsStore.snapshotBuffer"
+              :snapshot-buffer="rendererSnapshotBuffer"
               :trails-per-body="trails"
               :trail-version="trailVersion"
               :projection="projection"
@@ -524,8 +550,22 @@ onUnmounted(() => {
               @camera-mode-change="preferences.setCameraMode"
               @hover-body="onHoverBody"
             />
+            <SimulationScene3D
+              v-else
+              ref="scene3dRef"
+              :experiment-key="activeExperiment?.id ?? null"
+              :state="displayState"
+              :snapshot-buffer="rendererSnapshotBuffer"
+              :trajectories="trails"
+              :trail-version="trailVersion"
+              :trail-cutoff-step="experimentsStore.trailCutoffStep"
+              :show-trails="preferences.showTrails"
+              :show-grid="preferences.showGrid"
+              :body-colors="bodyColors"
+              :palette="canvasPalette"
+            />
             <div
-              v-if="hoverTooltip"
+              v-if="viewMode === '2d' && hoverTooltip"
               class="body-hover-tooltip"
               data-testid="body-hover-tooltip"
               :style="{ left: hoverTooltip.anchorX + 'px', top: hoverTooltip.anchorY + 'px' }"
@@ -541,38 +581,17 @@ onUnmounted(() => {
                 </div>
               </dl>
             </div>
-          </div>
-          <footer>
-            <button :disabled="!experimentsStore.can('PAUSE')" @click="experimentsStore.submitAction('PAUSE')" title="暂停">Ⅱ</button>
-            <button class="pause" :disabled="!experimentsStore.can('RESUME')" @click="experimentsStore.submitAction('RESUME')" title="继续">▶</button>
-            <button :disabled="!experimentsStore.can('STEP')" @click="experimentsStore.submitAction('STEP')" title="单步">▶│</button>
-            <template v-if="activeExperiment">
-              <div class="lab-progress-group">
-                <div
-                  class="lab-progress"
-                  role="progressbar"
-                  aria-label="实验进度"
-                  aria-valuemin="0"
-                  aria-valuemax="100"
-                  :aria-valuenow="progressPercent === null ? undefined : Number(progressPercent.toFixed(6))"
-                  :aria-valuetext="progressLabel + '，' + (progressState?.detail ?? '')"
-                >
-                  <i :style="{ transform: 'scaleX(' + (progressRatio ?? 0) + ')' }"></i>
-                </div>
-                <span class="progress-label">{{ progressLabel }}</span>
+            <div v-if="experimentsStore.encounterAlerts.length > 0" class="encounter-toast-stack">
+              <div v-for="(alert) in experimentsStore.encounterAlerts.slice(-3)" :key="alert.key" class="encounter-toast">
+                <button @click="onDismiss(alert.key)">×</button>
+                近距离事件：{{ encounterDistance(alert.event) }}
               </div>
-              <span class="progress-detail">{{ progressState?.detail }}</span>
-            </template>
-            <span v-else class="progress-empty">创建实验后显示进度</span>
-          </footer>
-
-          <div v-for="(alert) in experimentsStore.encounterAlerts.slice(-3)" :key="alert.key" class="encounter-toast">
-            <button @click="onDismiss(alert.key)">×</button>
-            近距离事件：{{ encounterDistance(alert.event) }}
+            </div>
           </div>
+          <PlaybackTimeline class="lab-playback" />
+
         </article>
 
-        <PlaybackTimeline v-show="!sceneExpanded" class="lab-playback" />
         <EventPanel
           v-show="!sceneExpanded"
           class="lab-event-panel"
@@ -581,14 +600,18 @@ onUnmounted(() => {
           @select="onSelectEvent"
         />
 
-        <KpiCards v-show="!sceneExpanded" :metrics="metrics" :step="step" :simulation-time-seconds="simTime" />
+        <KpiCards
+          v-show="!sceneExpanded"
+          :metrics="metrics"
+          :config="activeExperiment?.config ?? null"
+          :step="step"
+          :simulation-time-seconds="simTime"
+        />
 
-        <div v-show="!sceneExpanded" class="chart-row">
+        <div v-show="!sceneExpanded" class="chart-grid">
           <MetricChart title="系统能量" subtitle="总能量 (J) vs 步数" :series="energySeries" :paused="sceneExpanded" />
-          <MetricChart title="天体间距" subtitle="最近两体距离 (m)" :series="distanceSeries" :paused="sceneExpanded" />
-        </div>
-        <div v-show="!sceneExpanded" class="chart-row">
           <MetricChart title="角动量" subtitle="大小 (kg·m²/s)" :series="angularSeries" :paused="sceneExpanded" />
+          <MetricChart title="天体间距" subtitle="最近两体距离 (m)" :series="distanceSeries" :paused="sceneExpanded" />
           <article class="chart-card">
             <header><b>实验控制</b><span>动作状态</span></header>
             <div class="chart-body" style="padding: 12px; display: grid; gap: 8px; align-content: start;">

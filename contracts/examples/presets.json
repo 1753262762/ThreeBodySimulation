@@ -53,5 +53,154 @@
       "maxSteps": 20000000,
       "targetSimulationTimeSeconds": null
     }
+  },
+  {
+    "key": "D",
+    "name": "方案 D：20 星层级双星压力测试",
+    "description": "十组层级双星构成的 20 天体压力测试，用于观察密集场景性能与多尺度相互作用。",
+    "config": {
+      "name": "方案 D：20 星层级双星压力测试",
+      "bodies": [
+        { "id": "D-01", "name": "双星01-甲", "color": "#ffd166", "massKg": 1.98847e30, "position": { "x": 299494937141400.0, "y": 0.0, "z": 0 }, "velocity": { "x": 0.0, "y": 12381.743229, "z": 0 } },
+        { "id": "D-02", "name": "双星01-乙", "color": "#4d96ff", "massKg": 1.98847e30, "position": { "x": 298896545658600.0, "y": 0.0, "z": 0 }, "velocity": { "x": 0.0, "y": -8679.532777, "z": 0 } },
+        { "id": "D-03", "name": "双星02-甲", "color": "#ef476f", "massKg": 1.98847e30, "position": { "x": 242296493876649.25, "y": 176038707187976.2, "z": 0 }, "velocity": { "x": -7277.806068, "y": 10017.040692, "z": 0 } },
+        { "id": "D-04", "name": "双星02-乙", "color": "#76c893", "massKg": 1.98847e30, "position": { "x": 241812384997774.8, "y": 175686981499288.94, "z": 0 }, "velocity": { "x": 5101.701363, "y": -7021.88952, "z": 0 } },
+        { "id": "D-05", "name": "双星03-甲", "color": "#9b5de5", "massKg": 1.98847e30, "position": { "x": 92549025305949.25, "y": 284836611565735.9, "z": 0 }, "velocity": { "x": -11775.737581, "y": 3826.169078, "z": 0 } },
+        { "id": "D-06", "name": "双星03-乙", "color": "#f15bb5", "massKg": 1.98847e30, "position": { "x": 92364112168474.81, "y": 284267507446723.4, "z": 0 }, "velocity": { "x": 8254.726206, "y": -2682.123131, "z": 0 } },
+        { "id": "D-07", "name": "双星04-甲", "color": "#00bbf9", "massKg": 1.98847e30, "position": { "x": -92549025305949.22, "y": 284836611565735.94, "z": 0 }, "velocity": { "x": -11775.737581, "y": -3826.169078, "z": 0 } },
+        { "id": "D-08", "name": "双星04-乙", "color": "#00f5d4", "massKg": 1.98847e30, "position": { "x": -92364112168474.78, "y": 284267507446723.44, "z": 0 }, "velocity": { "x": 8254.726206, "y": 2682.123131, "z": 0 } },
+        { "id": "D-09", "name": "双星05-甲", "color": "#f8961e", "massKg": 1.98847e30, "position": { "x": -242296493876649.22, "y": 176038707187976.22, "z": 0 }, "velocity": { "x": -7277.806068, "y": -10017.040692, "z": 0 } },
+        { "id": "D-10", "name": "双星05-乙", "color": "#90be6d", "massKg": 1.98847e30, "position": { "x": -241812384997774.78, "y": 175686981499288.97, "z": 0 }, "velocity": { "x": 5101.701363, "y": 7021.88952, "z": 0 } },
+        { "id": "D-11", "name": "双星06-甲", "color": "#f9844a", "massKg": 1.98847e30, "position": { "x": -299494937141400.0, "y": 0.0, "z": 0 }, "velocity": { "x": 0.0, "y": -12381.743229, "z": 0 } },
+        { "id": "D-12", "name": "双星06-乙", "color": "#577590", "massKg": 1.98847e30, "position": { "x": -298896545658600.0, "y": 0.0, "z": 0 }, "velocity": { "x": 0.0, "y": 8679.532777, "z": 0 } },
+        { "id": "D-13", "name": "双星07-甲", "color": "#43aa8b", "massKg": 1.98847e30, "position": { "x": -242296493876649.28, "y": -176038707187976.16, "z": 0 }, "velocity": { "x": 7277.806068, "y": -10017.040692, "z": 0 } },
+        { "id": "D-14", "name": "双星07-乙", "color": "#277da1", "massKg": 1.98847e30, "position": { "x": -241812384997774.84, "y": -175686981499288.9, "z": 0 }, "velocity": { "x": -5101.701363, "y": 7021.88952, "z": 0 } },
+        { "id": "D-15", "name": "双星08-甲", "color": "#f94144", "massKg": 1.98847e30, "position": { "x": -92549025305949.28, "y": -284836611565735.9, "z": 0 }, "velocity": { "x": 11775.737581, "y": -3826.169078, "z": 0 } },
+        { "id": "D-16", "name": "双星08-乙", "color": "#f3722c", "massKg": 1.98847e30, "position": { "x": -92364112168474.84, "y": -284267507446723.4, "z": 0 }, "velocity": { "x": -8254.726206, "y": 2682.123131, "z": 0 } },
+        { "id": "D-17", "name": "双星09-甲", "color": "#f9c74f", "massKg": 1.98847e30, "position": { "x": 92549025305949.19, "y": -284836611565735.94, "z": 0 }, "velocity": { "x": 11775.737581, "y": 3826.169078, "z": 0 } },
+        { "id": "D-18", "name": "双星09-乙", "color": "#90be6d", "massKg": 1.98847e30, "position": { "x": 92364112168474.75, "y": -284267507446723.44, "z": 0 }, "velocity": { "x": -8254.726206, "y": -2682.123131, "z": 0 } },
+        { "id": "D-19", "name": "双星10-甲", "color": "#8338ec", "massKg": 1.98847e30, "position": { "x": 242296493876649.22, "y": -176038707187976.25, "z": 0 }, "velocity": { "x": 7277.806068, "y": 10017.040692, "z": 0 } },
+        { "id": "D-20", "name": "双星10-乙", "color": "#3a86ff", "massKg": 1.98847e30, "position": { "x": 241812384997774.78, "y": -175686981499289.0, "z": 0 }, "velocity": { "x": -5101.701363, "y": -7021.88952, "z": 0 } }
+      ],
+      "timeStepSeconds": 21600,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 1000000,
+      "maxSteps": 500000,
+      "targetSimulationTimeSeconds": null
+    }
+  },
+  {
+    "key": "E",
+    "name": "方案 E：真实太阳系 J2000 三维版",
+    "description": "基于 J2000 状态量的太阳与八大行星三维系统，适合长期太阳系轨道观察。",
+    "config": {
+      "name": "方案 E：真实太阳系 J2000 三维版",
+      "bodies": [
+        { "id": "SOL", "name": "太阳", "color": "#ffd166", "massKg": 1.988409871316534e30, "position": { "x": -709543679.393, "y": -745870359.754, "z": 27508776.9794 }, "velocity": { "x": 6.63117489155, "y": -12.3329337784, "z": -0.143732414619 } },
+        { "id": "MERCURY", "name": "水星", "color": "#a9a9a9", "massKg": 3.301000636920726e23, "position": { "x": 9404824467.53, "y": 44046268369.6, "z": 2758201652.26 }, "velocity": { "x": -57275.3728432, "y": 12539.2974997, "z": 6282.84229399 } },
+        { "id": "VENUS", "name": "金星", "color": "#e9c46a", "massKg": 4.867305814842006e24, "position": { "x": -71919068922.1, "y": 79585973872.0, "z": 5235701244.14 }, "velocity": { "x": -26324.1526908, "y": -23430.8355541, "z": 1199.67488694 } },
+        { "id": "EARTH", "name": "地球(地月质心简化)", "color": "#4d96ff", "massKg": 6.045626292270351e24, "position": { "x": -33643547936.7, "y": 142618205836.0, "z": 27470468.6777 }, "velocity": { "x": -29511.1378997, "y": -6793.23898892, "z": -0.141920489332 } },
+        { "id": "MARS", "name": "火星", "color": "#ef476f", "massKg": 6.41690901158174e23, "position": { "x": 188083414936.0, "y": -84547366264.1, "z": -6368243809.57 }, "velocity": { "x": 10763.6969909, "y": 24203.2838727, "z": 242.7313287 } },
+        { "id": "JUPITER", "name": "木星", "color": "#d4a373", "massKg": 1.8985176587806962e27, "position": { "x": 715444440571.0, "y": 187528818929.0, "z": -16786903618.6 }, "velocity": { "x": -3477.62915213, "y": 13243.0659681, "z": 23.0027375724 } },
+        { "id": "SATURN", "name": "土星", "color": "#f4d35e", "massKg": 5.684578883448452e26, "position": { "x": -62333369003.3, "y": 1347506140050.0, "z": -21015105769.6 }, "velocity": { "x": -10153.8052026, "y": -470.299997983, "z": 411.874532177 } },
+        { "id": "URANUS", "name": "天王星", "color": "#90e0ef", "massKg": 8.68189383156286e25, "position": { "x": -2701455787260.0, "y": 429189740978.0, "z": 36638035173.7 }, "velocity": { "x": -1114.22066579, "y": -7052.25065493, "z": -11.7543035026 } },
+        { "id": "NEPTUNE", "name": "海王星", "color": "#4361ee", "massKg": 1.0243062344485564e26, "position": { "x": 3153166623580.0, "y": 3149419932650.0, "z": -137513927028.0 }, "velocity": { "x": -3864.72788716, "y": 3863.99586206, "z": 9.24495222065 } }
+      ],
+      "timeStepSeconds": 21600,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 1000000,
+      "maxSteps": 500000,
+      "targetSimulationTimeSeconds": null
+    }
+  },
+  {
+    "key": "F",
+    "name": "方案 F：地月系统稳定双体轨道",
+    "description": "地球与月球围绕共同质心运行的稳定双体系统，适合基础轨道验证。",
+    "config": {
+      "name": "方案 F：地月系统稳定双体轨道",
+      "bodies": [
+        { "id": "EM-1", "name": "地球", "color": "#4d96ff", "massKg": 5.972168398184079e24, "position": { "x": -4670672.616916974, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": -12.448858782099563, "z": 0 } },
+        { "id": "EM-2", "name": "月球", "color": "#d9d9d9", "massKg": 7.34578917639303e22, "position": { "x": 379728341.383083, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 1012.0993024253586, "z": 0 } }
+      ],
+      "timeStepSeconds": 1800,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 1000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": null
+    }
+  },
+  {
+    "key": "G",
+    "name": "方案 G：正交双轨道系统",
+    "description": "中央恒星与分别位于 XY、XZ 平面的两颗轨道天体组成的三维展示系统。",
+    "config": {
+      "name": "3D展示:正交双轨道系统",
+      "bodies": [
+        { "id": "ORTHO-0", "name": "中央恒星", "color": "#ffd166", "massKg": 1.989e30, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": -54.61465682052287, "y": -59.82735902200749, "z": 0 } },
+        { "id": "ORTHO-1", "name": "XY轨道天体", "color": "#4d96ff", "massKg": 4e27, "position": { "x": 1.5e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 29749.154273693224, "z": 0 } },
+        { "id": "ORTHO-2", "name": "XZ轨道天体", "color": "#ff6b6b", "massKg": 4e27, "position": { "x": 0, "y": 0, "z": 1.8e11 }, "velocity": { "x": 27157.138104004993, "y": 0, "z": 0 } }
+      ],
+      "timeStepSeconds": 1800,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 1000000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": 63072000
+    }
+  },
+  {
+    "key": "H",
+    "name": "方案 H：螺旋穿越系统",
+    "description": "轨道伴星与高速穿越天体构成的三维系统，用于观察空间轨迹与近距离掠过。",
+    "config": {
+      "name": "3D展示:螺旋穿越系统",
+      "bodies": [
+        { "id": "HELIX-0", "name": "中央恒星", "color": "#ffd166", "massKg": 1.989e30, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": -37, "z": 0 } },
+        { "id": "HELIX-1", "name": "轨道伴星", "color": "#4d96ff", "massKg": 2.5e27, "position": { "x": 1.5e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 29749.154273693224, "z": 0 } },
+        { "id": "HELIX-2", "name": "穿越天体", "color": "#c77dff", "massKg": 5e25, "position": { "x": 7e10, "y": -4e10, "z": -3e11 }, "velocity": { "x": -9000, "y": 13000, "z": 24000 } }
+      ],
+      "timeStepSeconds": 900,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 1000000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": 31557600
+    }
+  },
+  {
+    "key": "I",
+    "name": "方案 I：三维混沌近遇",
+    "description": "三颗大质量天体处于非共面初始状态，用于观察三维混沌运动与近遇。",
+    "config": {
+      "name": "3D展示:三维混沌近遇",
+      "bodies": [
+        { "id": "CHAOS-1", "name": "赤星", "color": "#ff595e", "massKg": 7e29, "position": { "x": -8e10, "y": -2e10, "z": 5e10 }, "velocity": { "x": 7000, "y": 15000, "z": -9000 } },
+        { "id": "CHAOS-2", "name": "蓝星", "color": "#4d96ff", "massKg": 8e29, "position": { "x": 8e10, "y": 3e10, "z": -4e10 }, "velocity": { "x": -11000, "y": -12000, "z": 10000 } },
+        { "id": "CHAOS-3", "name": "金星", "color": "#ffd166", "massKg": 6e29, "position": { "x": 1e10, "y": 1.1e11, "z": 8e10 }, "velocity": { "x": -14000, "y": -6000, "z": -8000 } }
+      ],
+      "timeStepSeconds": 1200,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 100000000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": 31557600
+    }
+  },
+  {
+    "key": "J",
+    "name": "方案 J：四体三平面正交轨道",
+    "description": "中央恒星与分别位于 XY、XZ、YZ 三个平面的轨道天体组成的四体三维系统。",
+    "config": {
+      "name": "3D展示:四体三平面正交轨道",
+      "bodies": [
+        { "id": "ORTHO3-0", "name": "中央恒星", "color": "#ffd166", "massKg": 1.989e30, "position": { "x": 0, "y": 0, "z": 0 }, "velocity": { "x": -50.563347026620136, "y": -59.82735902200749, "z": -54.61465682052287 } },
+        { "id": "ORTHO3-XY", "name": "XY轨道", "color": "#4d96ff", "massKg": 4e27, "position": { "x": 1.5e11, "y": 0, "z": 0 }, "velocity": { "x": 0, "y": 29749.154273693224, "z": 0 } },
+        { "id": "ORTHO3-XZ", "name": "XZ轨道", "color": "#ff6b6b", "massKg": 4e27, "position": { "x": 0, "y": 0, "z": 1.8e11 }, "velocity": { "x": 27157.138104004993, "y": 0, "z": 0 } },
+        { "id": "ORTHO3-YZ", "name": "YZ轨道", "color": "#80ed99", "massKg": 4e27, "position": { "x": 0, "y": 2.1e11, "z": 0 }, "velocity": { "x": 0, "y": 0, "z": 25142.624308986862 } }
+      ],
+      "timeStepSeconds": 1800,
+      "gravitationalConstant": 6.6743e-11,
+      "softeningLengthMeters": 1000000,
+      "maxSteps": 200000,
+      "targetSimulationTimeSeconds": 94608000
+    }
   }
 ]

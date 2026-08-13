@@ -17,7 +17,6 @@ const props = defineProps<{
   title: string
   subtitle: string
   series: { name: string; unit: string; color: string; data: [number, number][] }[]
-  height?: number
   /** Charts are hidden in the expanded scene and should not consume updates. */
   paused?: boolean
 }>()
@@ -125,7 +124,12 @@ watch(
 watch(
   () => props.paused,
   (paused) => {
-    if (!paused) scheduleUpdate()
+    if (!paused) {
+      requestAnimationFrame(() => {
+        chart?.resize()
+        scheduleUpdate()
+      })
+    }
   },
 )
 
@@ -158,6 +162,6 @@ onBeforeUnmount(() => {
       <b>{{ title }}</b>
       <span>{{ subtitle }}</span>
     </header>
-    <div ref="chartRef" class="chart-body" :style="{ minHeight: (height ?? 180) + 'px' }"></div>
+    <div ref="chartRef" class="chart-body"></div>
   </article>
 </template>

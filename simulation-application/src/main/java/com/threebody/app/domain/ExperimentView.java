@@ -25,6 +25,8 @@ public record ExperimentView(
         SimulationConfig config,
         SimulationState state,
         ExperimentMetrics metrics,
+        SimulationHealthReport healthReport,
+        ExperimentLineage lineage,
         TrajectoryInfo trajectory,
         List<SimulationEvent> events,
         long lastSequence,
@@ -39,6 +41,6 @@ public record ExperimentView(
                 e.id(), e.name(), e.status(), queuePosition,
                 e.createdAt(), e.updatedAt(), e.startedAt(), e.completedAt(),
                 e.config().bodyCount(), e.progress(), e.endReason(), storageBytes, e.errorMessage(),
-                e.config(), e.state(), e.metrics(), e.trajectoryInfo(), e.events(), e.lastSequence(), e.errorMessage());
+                e.config(), e.state(), e.metrics(), e.healthReport(), e.lineage(), e.trajectoryInfo(), e.events(), e.lastSequence(), e.errorMessage());
     }
 }

@@ -69,6 +69,29 @@ public final class MetricsCalculator {
     }
 
     /**
+     * 角动量漂移的参考尺度。净角动量接近零时使用各天体角动量贡献模长之和，
+     * 避免由相互抵消造成的极小分母放大相对误差。
+     */
+    public static double angularMomentumReferenceScale(SimulationConfig config, SimulationState state) {
+        List<BodySpec> specs = config.bodies();
+        List<BodyState> bodies = state.bodies();
+        Vector3 total = Vector3.ZERO;
+        double contributionScale = 0.0;
+        for (int i = 0; i < bodies.size(); i++) {
+            BodyState body = bodies.get(i);
+            Vector3 contribution = body.position()
+                    .cross(body.velocity().multiply(specs.get(i).massKg()));
+            total = total.add(contribution);
+            contributionScale += contribution.length();
+        }
+        double totalMagnitude = total.length();
+        if (!Double.isFinite(totalMagnitude) || !Double.isFinite(contributionScale)) {
+            return Double.NaN;
+        }
+        return totalMagnitude > contributionScale * 1e-12 ? totalMagnitude : contributionScale;
+    }
+
+    /**
      * 相对能量漂移：(E - E0)/|E0|；E0 为 0 时退化为绝对漂移。
      */
     public static double relativeEnergyDrift(double initialEnergy, double currentEnergy) {

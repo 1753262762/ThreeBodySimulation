@@ -119,6 +119,97 @@ a { color: inherit; text-decoration: none; }
   display: grid; grid-template-rows: 58px minmax(0, 1fr);
   background: var(--bg); color: var(--text);
 }
+
+/* 可解释参数引导与对照实验 */
+.parameter-help {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.parameter-help p { margin: 4px 0; }
+.parameter-help summary,
+.health-technical-details summary,
+.validation-guidance summary { cursor: pointer; color: var(--accent); }
+
+.validation-guidance {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: 8px;
+  background: var(--warn-bg);
+}
+
+.validation-guidance header,
+.config-summary header,
+.phenomenon-overview > header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.validation-guidance p { margin: 0; line-height: 1.5; }
+.guidance-evidence { margin: 0; padding-left: 20px; color: var(--muted); }
+.guidance-action { display: grid; gap: 4px; }
+.guidance-action button { justify-self: start; }
+.guidance-alternative { display: grid; gap: 3px; padding: 6px 0; }
+
+.config-summary {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.config-summary header span,
+.phenomenon-overview > header span { color: var(--muted); font-size: 0.75rem; }
+.config-summary dl,
+.comparison-diff { display: grid; gap: 6px; margin: 0; }
+.config-summary dl > div,
+.comparison-diff > div { display: flex; justify-content: space-between; gap: 12px; }
+.config-summary dt,
+.comparison-diff dt { color: var(--muted); }
+.config-summary dd,
+.comparison-diff dd { margin: 0; text-align: right; }
+
+.comparison-dialog { max-width: 680px; }
+.comparison-limit-options { display: grid; gap: 8px; border-color: var(--warn); }
+.comparison-limit-options label { display: flex; gap: 8px; align-items: flex-start; }
+
+.health-explanation-layer { display: grid; gap: 8px; }
+.health-explanation-layer h3 { margin: 0; font-size: 0.9rem; color: var(--accent); }
+.health-explanation-layer p { margin: 0; line-height: 1.5; }
+.health-metric-grid dd small { display: block; margin-top: 4px; color: var(--muted); font-weight: 400; }
+.health-technical-details { border-top: 1px solid var(--line); padding-top: 8px; }
+
+.phenomenon-overview {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.event-content { min-height: 0; overflow-y: auto; }
+.event-content > .phenomenon-overview { border: 0; border-radius: 0; }
+.phenomenon-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.phenomenon-columns article { min-width: 0; }
+.phenomenon-columns h3 { margin: 0 0 6px; font-size: 0.82rem; color: var(--accent); }
+.phenomenon-columns p,
+.phenomenon-columns ul { margin: 0; line-height: 1.5; }
+.phenomenon-columns ul { padding-left: 18px; }
+.interpretation-limit { color: var(--warn-text); margin-top: 8px !important; }
+.lineage-summary { display: grid; gap: 6px; }
+.lineage-summary p { margin: 0; }
+
+@media (max-width: 900px) {
+  .phenomenon-columns { grid-template-columns: 1fr; }
+}
 .lab-header {
   height: 58px; padding: 0 20px; display: flex; align-items: center; gap: 14px;
   background: var(--panel); border-bottom: 1px solid var(--line);
@@ -374,6 +465,27 @@ a { color: inherit; text-decoration: none; }
 .lab-kpis .health-warning em { color: var(--warn-text); background: var(--warn-bg); }
 .lab-kpis .health-critical em { color: var(--danger-text); background: var(--danger-bg); }
 .lab-kpis .health-unavailable em { color: var(--muted); background: rgba(143, 163, 189, .1); }
+.simulation-health-card { padding: 0 !important; overflow: hidden; }
+.simulation-health-card.expanded { grid-column: 1 / -1; }
+.health-card-summary { width: 100%; min-height: 100%; padding: 10px 12px; border: 0; background: transparent; display: grid; gap: 4px; text-align: left; }
+.health-card-summary b { font-size: 15px; }
+.health-status-good .health-card-summary b, .health-badge[data-health="GOOD"] { color: #4bc58a; }
+.health-status-warning .health-card-summary b, .health-badge[data-health="WARNING"] { color: var(--warn-text); }
+.health-status-poor .health-card-summary b, .health-status-failed .health-card-summary b,
+.health-badge[data-health="POOR"], .health-badge[data-health="FAILED"] { color: var(--danger-text); }
+.health-card-details { border-top: 1px solid var(--line); padding: 12px; display: grid; gap: 10px; }
+.health-scope-note { margin: 0; color: var(--muted); font-size: 11px; }
+.health-metric-grid { margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.health-metric-grid div { min-width: 0; }
+.health-metric-grid dt { color: var(--muted); font-size: 10px; }
+.health-metric-grid dd { margin: 3px 0 0; font: 11px var(--mono); overflow-wrap: anywhere; }
+.health-reasons { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: 11px; }
+.health-reasons li[data-severity="ERROR"] { color: var(--danger-text); }
+.health-reasons li[data-severity="WARNING"] { color: var(--warn-text); }
+.health-failure { display: grid; gap: 3px; padding: 8px; border: 1px solid var(--danger-text); border-radius: 6px; font: 11px var(--mono); }
+.health-clone-button { justify-self: start; }
+.health-clone-notice { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; border: 1px solid var(--accent); border-radius: 6px; color: var(--text); font-size: 11px; }
+.health-badge { padding: 2px 5px; border: 1px solid currentColor; border-radius: 999px; font: 9px var(--mono); }
 .chart-grid {
   min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
   grid-auto-rows: 190px; gap: 10px;
@@ -492,6 +604,7 @@ a { color: inherit; text-decoration: none; }
   .lab-layout { grid-template-columns: 280px minmax(0, 1fr); }
   .lab-layout.is-sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
   .lab-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .health-metric-grid { grid-template-columns: 1fr; }
   .lab-main { gap: 8px; padding: 10px; }
 }
 
@@ -555,7 +668,7 @@ a { color: inherit; text-decoration: none; }
 /* ============ 事件面板 ============ */
 .event-panel {
   background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  display: grid; grid-template-rows: 34px minmax(0, auto); max-height: 340px; overflow: hidden;
+  display: grid; grid-template-rows: 34px minmax(0, 1fr); height: 140px; overflow: hidden;
 }
 .event-panel-header {
   padding: 0 12px; display: flex; align-items: center; justify-content: space-between;

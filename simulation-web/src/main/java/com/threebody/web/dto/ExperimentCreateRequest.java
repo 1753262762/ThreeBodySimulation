@@ -6,5 +6,8 @@ package com.threebody.web.dto;
  * @param name   实验名称，可空
  * @param config 模拟配置，必填
  */
-public record ExperimentCreateRequest(String name, SimulationConfigRequest config) {
+public record ExperimentCreateRequest(
+        String name,
+        SimulationConfigRequest config,
+        ExperimentRetryContextRequest retryContext) {
 }

@@ -26,6 +26,8 @@ public final class Experiment {
     private volatile SimulationConfig config;
     private volatile SimulationState state;
     private volatile ExperimentMetrics metrics;
+    private volatile SimulationHealthReport healthReport;
+    private final ExperimentLineage lineage;
     private final List<SimulationEvent> events = new ArrayList<>();
     private volatile TrajectoryInfo trajectoryInfo;
     private volatile long lastSequence;
@@ -36,6 +38,10 @@ public final class Experiment {
     private volatile SimulationConfig pendingRestartConfig;
 
     public Experiment(String id, String name, SimulationConfig config) {
+        this(id, name, config, null);
+    }
+
+    public Experiment(String id, String name, SimulationConfig config, ExperimentLineage lineage) {
         this.id = id;
         this.name = name;
         this.config = config;
@@ -43,6 +49,7 @@ public final class Experiment {
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
         this.trajectoryInfo = new TrajectoryInfo(1L, 0L, 50_000L, 8_000);
+        this.lineage = lineage;
     }
 
     @JsonCreator
@@ -58,6 +65,8 @@ public final class Experiment {
             @JsonProperty("config") SimulationConfig config,
             @JsonProperty("state") SimulationState state,
             @JsonProperty("metrics") ExperimentMetrics metrics,
+            @JsonProperty("healthReport") SimulationHealthReport healthReport,
+            @JsonProperty("lineage") ExperimentLineage lineage,
             @JsonProperty("events") List<SimulationEvent> events,
             @JsonProperty("trajectoryInfo") TrajectoryInfo trajectoryInfo,
             @JsonProperty("lastSequence") long lastSequence,
@@ -73,6 +82,8 @@ public final class Experiment {
         this.config = config;
         this.state = state;
         this.metrics = metrics;
+        this.healthReport = healthReport;
+        this.lineage = lineage;
         if (events != null) {
             this.events.addAll(events);
         }
@@ -102,6 +113,9 @@ public final class Experiment {
     public synchronized void setState(SimulationState state) { this.state = state; touch(); }
     public synchronized ExperimentMetrics metrics() { return metrics; }
     public synchronized void setMetrics(ExperimentMetrics metrics) { this.metrics = metrics; touch(); }
+    public synchronized SimulationHealthReport healthReport() { return healthReport; }
+    public synchronized void setHealthReport(SimulationHealthReport healthReport) { this.healthReport = healthReport; touch(); }
+    public synchronized ExperimentLineage lineage() { return lineage; }
     public synchronized TrajectoryInfo trajectoryInfo() { return trajectoryInfo; }
     public synchronized void setTrajectoryInfo(TrajectoryInfo info) { this.trajectoryInfo = info; }
     public synchronized long lastSequence() { return lastSequence; }

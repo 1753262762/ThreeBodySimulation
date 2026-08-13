@@ -153,4 +153,13 @@ describe('mockRepository 历史与回放（F7）', () => {
     expect(slice.currentState?.step).toBe(5)
     expect(getRecord(record.id)).toBeDefined()
   })
+
+  it('maintains an isolated authoritative-shaped Health report', () => {
+    const record = createRecord(baseConfig(), 'Health mock')
+    expect(record.healthReport?.status).toBe('GOOD')
+    const initialSamples = record.healthReport?.sampleCount ?? 0
+    advance(record, 2)
+    expect(record.healthReport?.sampleCount).toBe(initialSamples + 2)
+    expect(record.healthReport?.thresholds.energyWarning).toBe(0.001)
+  })
 })

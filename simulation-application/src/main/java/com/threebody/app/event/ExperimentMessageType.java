@@ -5,6 +5,7 @@ public enum ExperimentMessageType {
     SNAPSHOT,
     TRAJECTORY,
     METRICS,
+    HEALTH,
     STATUS,
     NEAR_ENCOUNTER,
     DIAGNOSTIC,

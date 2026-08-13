@@ -5,6 +5,7 @@ import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentAction;
 import com.threebody.app.domain.ExperimentMetrics;
 import com.threebody.app.domain.ExperimentStatus;
+import com.threebody.app.domain.ExperimentRetryRequest;
 import com.threebody.app.domain.ExperimentSummaryView;
 import com.threebody.app.domain.ExperimentView;
 import com.threebody.app.domain.Progress;
@@ -92,9 +93,11 @@ public class ExperimentController {
         if (result.valid() && result.normalizedConfig() != null) {
             response.put("normalizedConfig", toConfigDto(result.normalizedConfig()));
             response.put("estimatedSteps", result.estimatedSteps());
+            response.put("configSummary", result.configSummary());
         } else {
             response.put("normalizedConfig", null);
             response.put("estimatedSteps", null);
+            response.put("configSummary", null);
         }
 
         return response;
@@ -136,7 +139,10 @@ public class ExperimentController {
                     "配置校验失败", vr.issues()));
         }
 
-        Experiment e = service.createExperiment(body.name(), vr.normalizedConfig());
+        ExperimentRetryRequest retryRequest = body.retryContext() == null ? null
+                : new ExperimentRetryRequest(body.retryContext().sourceExperimentId(),
+                        body.retryContext().recommendationCode(), body.retryContext().strategy());
+        Experiment e = service.createExperiment(body.name(), vr.normalizedConfig(), retryRequest);
 
         Map<String, Object> dto = toExperimentDto(e, service.getQueuePosition(e.id()),
                 service.getStorageBytes(e.id()));
@@ -409,6 +415,12 @@ public class ExperimentController {
                         issue.riskLevel() != null ? issue.riskLevel().name() : null)).toList());
     }
 
+    @ExceptionHandler(ExperimentService.RetryContextException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ApiError handleRetryContext(ExperimentService.RetryContextException ex) {
+        return new ApiError("INVALID_RETRY_CONTEXT", ex.getMessage());
+    }
+
     @ExceptionHandler(ValidationFailedException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
     public ApiError handleValidationFailed(ValidationFailedException ex) {
@@ -492,6 +504,8 @@ public class ExperimentController {
         dto.put("endReason", view.endReason() != null ? view.endReason().name() : null);
         dto.put("storageBytes", view.storageBytes());
         dto.put("errorCode", view.errorCode());
+        dto.put("healthStatus", view.healthStatus() != null ? view.healthStatus().name() : null);
+        dto.put("lineage", view.lineage());
         return dto;
     }
 
@@ -511,10 +525,13 @@ public class ExperimentController {
         dto.put("endReason", view.endReason() != null ? view.endReason().name() : null);
         dto.put("storageBytes", view.storageBytes());
         dto.put("errorCode", view.errorCode());
+        dto.put("healthStatus", view.healthReport() != null ? view.healthReport().status().name() : null);
         dto.put("config", toConfigDto(view.config()));
         dto.put("state", view.state() != null ? toStateDto(view.state()) : null);
         dto.put("metrics", view.metrics() != null ? toMetricsDto(view.state() != null ? view.state().step() : 0,
                 view.state() != null ? view.state().simulationTimeSeconds() : 0.0, view.metrics()) : null);
+        dto.put("healthReport", view.healthReport());
+        dto.put("lineage", view.lineage());
         dto.put("trajectory", toTrajectoryInfoDto(view.trajectory()));
         dto.put("events", view.events().stream().map(ExperimentController::toEventDto).toList());
         dto.put("lastSequence", view.lastSequence());
@@ -636,6 +653,7 @@ public class ExperimentController {
         dto.put("message", issue.message());
         dto.put("severity", issue.severity().name());
         dto.put("riskLevel", issue.riskLevel() != null ? issue.riskLevel().name() : null);
+        dto.put("guidance", issue.guidance());
         return dto;
     }
 
@@ -683,6 +701,7 @@ public class ExperimentController {
         response.put("issues", issues.stream().map(ExperimentController::toIssueDto).toList());
         response.put("normalizedConfig", null);
         response.put("estimatedSteps", null);
+        response.put("configSummary", null);
         return response;
     }
 

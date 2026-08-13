@@ -16,8 +16,11 @@ import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentStatus;
 import com.threebody.app.service.ExperimentService;
 import com.threebody.app.service.HistorySlice;
+import com.threebody.app.service.SimulationHealthAnalyzer;
 import com.threebody.core.BodySpec;
 import com.threebody.core.PhysicalConstants;
+import com.threebody.core.MetricsCalculator;
+import com.threebody.core.NBodyIntegrator;
 import com.threebody.core.SimulationConfig;
 import com.threebody.core.Vector3;
 import java.util.List;
@@ -42,6 +45,31 @@ class ExperimentControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value("experiment-1"))
                 .andExpect(jsonPath("$.name").value("REST 测试"));
+    }
+
+    @Test
+    void detailAndSummaryExposeAuthoritativeHealth() throws Exception {
+        ExperimentService service = mock(ExperimentService.class);
+        Experiment experiment = new Experiment("experiment-1", "Health REST", config());
+        var state = NBodyIntegrator.initialState(config());
+        var metrics = MetricsCalculator.compute(config(), state,
+                MetricsCalculator.totalEnergy(config(), state));
+        experiment.setState(state);
+        experiment.setHealthReport(new SimulationHealthAnalyzer(config(), state, null)
+                .analyze(state, metrics, false));
+        when(service.getExperiment("experiment-1")).thenReturn(experiment);
+        when(service.getExperiments()).thenReturn(List.of(experiment));
+        when(service.getQueuePosition("experiment-1")).thenReturn(0);
+        when(service.getStorageBytes("experiment-1")).thenReturn(0L);
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ExperimentController(service)).build();
+
+        mvc.perform(get("/api/v1/experiments/{id}", "experiment-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.healthReport.status").value("GOOD"))
+                .andExpect(jsonPath("$.healthReport.thresholds.energyWarning").value(0.001));
+        mvc.perform(get("/api/v1/experiments"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].healthStatus").value("GOOD"));
     }
 
     @Test
@@ -89,6 +117,32 @@ class ExperimentControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
                 .andExpect(jsonPath("$.issues[0].severity").value("ERROR"));
+    }
+
+    @Test
+    void validateConfigReturnsSummaryAndStructuredGuidance() throws Exception {
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(
+                new ExperimentController(mock(ExperimentService.class))).build();
+
+        mvc.perform(post("/api/v1/configs/validate")
+                        .contentType("application/json")
+                        .content("""
+                                {
+                                  "bodies": [
+                                    {"id":"a","name":"甲","massKg":1e30,"position":{"x":0,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}},
+                                    {"id":"b","name":"乙","massKg":1e30,"position":{"x":1e8,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}}
+                                  ],
+                                  "timeStepSeconds":3600,
+                                  "gravitationalConstant":6.6743e-11,
+                                  "softeningLengthMeters":1e6,
+                                  "maxSteps":1000
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.configSummary.estimatedSteps").value(1000))
+                .andExpect(jsonPath("$.configSummary.limitingEndCondition").value("MAX_STEPS"))
+                .andExpect(jsonPath("$.issues[0].code").value("TIME_STEP_TOO_LARGE"))
+                .andExpect(jsonPath("$.issues[0].guidance.primaryAction.mode").value("APPLY_PATCH"));
     }
 
     @Test

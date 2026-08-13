@@ -33,6 +33,9 @@ public final class ConfigValidator {
     /** 时间步风险：单步移动量占有效半径的比例阈值。 */
     private static final double MOVE_RATE_CAUTION = 0.05;
     private static final double MOVE_RATE_HIGH = 0.2;
+    private static final double PERIOD_RATE_CAUTION = 1.0 / 100.0;
+    private static final double PERIOD_RATE_HIGH = 1.0 / 20.0;
+    private static final double GUIDANCE_MARGIN = 0.9;
 
     /** 软化长度过小/过大判定使用的 ε/rMin 阈值。 */
     private static final double SOFTENING_RATIO_TOO_SMALL = 1e-6;
@@ -61,7 +64,8 @@ public final class ConfigValidator {
 
         SimulationConfig normalized = normalize(config);
         validateRisks(normalized, issues);
-        return new ValidationResult(issues, normalized, normalized.estimatedTotalSteps());
+        return new ValidationResult(issues, normalized, normalized.estimatedTotalSteps(),
+                summarize(normalized));
     }
 
     private static void validateGlobals(SimulationConfig config, List<ValidationIssue> issues) {
@@ -193,14 +197,20 @@ public final class ConfigValidator {
 
         double minPeriod = Double.POSITIVE_INFINITY;
         String minPeriodPair = null;
+        List<String> minPeriodBodyIds = List.of();
         double minPeriodRatio = 0.0;
 
         double maxMoveRate = 0.0;
         String maxMovePair = null;
+        List<String> maxMoveBodyIds = List.of();
+        double maxMoveDistanceMeters = 0.0;
+        double maxMoveReferenceMeters = 0.0;
 
         double rMin = Double.POSITIVE_INFINITY;
+        List<String> rMinBodyIds = List.of();
         double minDistBelow5Eps = Double.POSITIVE_INFINITY;
         String minDistPair = null;
+        List<String> minDistBodyIds = List.of();
 
         for (int i = 0; i < n; i++) {
             BodySpec a = bodies.get(i);
@@ -224,40 +234,63 @@ public final class ConfigValidator {
 
                 if (r < rMin) {
                     rMin = r;
+                    rMinBodyIds = bodyIds(a, b);
                 }
                 if (period < minPeriod) {
                     minPeriod = period;
                     minPeriodPair = pairName;
                     minPeriodRatio = dt / period;
+                    minPeriodBodyIds = bodyIds(a, b);
                 }
                 if (moveRate > maxMoveRate) {
                     maxMoveRate = moveRate;
                     maxMovePair = pairName;
+                    maxMoveBodyIds = bodyIds(a, b);
+                    maxMoveDistanceMeters = vRel * dt;
+                    maxMoveReferenceMeters = rEff;
                 }
                 if (eps > 0.0 && r < PhysicalConstants.NEAR_ENCOUNTER_SOFTENING_FACTOR * eps
                         && r < minDistBelow5Eps) {
                     minDistBelow5Eps = r;
                     minDistPair = pairName;
+                    minDistBodyIds = bodyIds(a, b);
                 }
             }
         }
 
-        boolean timeStepHigh = Double.isFinite(minPeriod) && minPeriodRatio > 1.0 / 20.0
+        boolean timeStepHigh = Double.isFinite(minPeriod) && minPeriodRatio > PERIOD_RATE_HIGH
                 || maxMoveRate > MOVE_RATE_HIGH;
-        boolean timeStepCaution = Double.isFinite(minPeriod) && minPeriodRatio > 1.0 / 100.0
+        boolean timeStepCaution = Double.isFinite(minPeriod) && minPeriodRatio > PERIOD_RATE_CAUTION
                 || maxMoveRate > MOVE_RATE_CAUTION;
+        double suggestedDt = suggestedTimeStep(dt, minPeriodRatio, maxMoveRate);
+        ValidationGuidance timeStepGuidance = new ValidationGuidance(
+                "当前时间步长相对系统中最快的局部运动偏大。",
+                "一次积分可能跨过过多轨道变化，使能量与角动量误差增大，甚至导致数值失败。",
+                timeStepEvidence(dt, suggestedDt, minPeriod, minPeriodRatio, minPeriodBodyIds,
+                        maxMoveDistanceMeters, maxMoveReferenceMeters, maxMoveRate, maxMoveBodyIds),
+                new GuidanceAction("REDUCE_TIME_STEP", GuidanceActionMode.APPLY_PATCH,
+                        "减小时间步长",
+                        "让局部周期比例和单步位移比例回到注意阈值以内，并保留 10% 余量。",
+                        "预计积分步数会增加；若保持模拟时长，最大步数也需要同比增加。",
+                        new GuidanceConfigPatch(suggestedDt, null),
+                        GuidanceAdjustmentPolicy.PRESERVE_SIMULATION_DURATION),
+                List.of(new GuidanceAction("REVIEW_FASTEST_PAIR", GuidanceActionMode.MANUAL_REVIEW,
+                        "检查最快变化的天体对",
+                        "确认当前初始位置和速度是否确实是要研究的条件。",
+                        "修改初始条件会改变研究问题，不能再只比较积分精度。",
+                        null, null)));
         if (timeStepHigh) {
             issues.add(ValidationIssue.risk("timeStepSeconds", ValidationCode.TIME_STEP_TOO_LARGE,
                     "时间步长相对最近轨道周期过大，可能漏过快速轨道运动；减小步长会增加计算量但通常改善稳定性。"
                             + "当前最严重对为 " + minPeriodPair + "，dt/period="
                             + formatRatio(minPeriodRatio) + "，单步位移比例=" + formatRatio(maxMoveRate),
-                    RiskLevel.HIGH));
+                    RiskLevel.HIGH, timeStepGuidance));
         } else if (timeStepCaution) {
             issues.add(ValidationIssue.risk("timeStepSeconds", ValidationCode.TIME_STEP_TOO_LARGE,
                     "时间步长相对部分轨道周期偏大，建议检查是否漏过快速运动；减小步长会增加计算量但通常改善稳定性。"
                             + "当前最严重对为 " + minPeriodPair + "，dt/period="
                             + formatRatio(minPeriodRatio) + "，单步位移比例=" + formatRatio(maxMoveRate),
-                    RiskLevel.CAUTION));
+                    RiskLevel.CAUTION, timeStepGuidance));
         }
 
         SpeedEscape worst = worstSpeedEscape(bodies, g, eps);
@@ -268,14 +301,16 @@ public final class ConfigValidator {
                         ValidationCode.INITIAL_SPEED_HIGH,
                         "相对系统质心的速度远高于逃逸速度，可能是合法的非束缚/逃逸初始条件，也可能快速解体。"
                                 + "最危险天体为 " + worst.name() + "，speedRate=" + formatRatio(worst.speedRate()),
-                        RiskLevel.HIGH));
+                        RiskLevel.HIGH,
+                        speedGuidance(worst, RiskLevel.HIGH)));
             } else if (worst.speedRate() > 2.0) {
                 issues.add(ValidationIssue.risk(
                         "bodies[" + worst.index() + "].velocity",
                         ValidationCode.INITIAL_SPEED_HIGH,
                         "相对系统质心的速度高于逃逸速度，可能进入非束缚/逃逸轨道，也可能导致系统快速发散。"
                                 + "最危险天体为 " + worst.name() + "，speedRate=" + formatRatio(worst.speedRate()),
-                        RiskLevel.CAUTION));
+                        RiskLevel.CAUTION,
+                        speedGuidance(worst, RiskLevel.CAUTION)));
             }
         }
 
@@ -286,13 +321,14 @@ public final class ConfigValidator {
                     ? "软化长度为 0 时近遇阈值为 0，不会产生 Close Encounter 事件；"
                     : "ε/rMin=" + formatRatio(epsRatio) + "，近接保护较弱；";
             issues.add(ValidationIssue.risk("softeningLengthMeters", ValidationCode.SOFTENING_TOO_SMALL,
-                    suffix + "建议设置为特征距离的千分之一量级以平滑近距离引力。", level));
+                    suffix + "建议结合目标近距离尺度人工检查软化长度。", level,
+                    softeningGuidance(eps, rMin, epsRatio, rMinBodyIds, true)));
         }
         if (epsRatio > SOFTENING_RATIO_TOO_LARGE) {
             issues.add(ValidationIssue.risk("softeningLengthMeters", ValidationCode.SOFTENING_TOO_LARGE,
                     "软化长度相对初始最近距离过大（ε/rMin=" + formatRatio(epsRatio)
                             + "），近距离引力会被明显抹平，结果可能偏离目标物理模型。",
-                    RiskLevel.HIGH));
+                    RiskLevel.HIGH, softeningGuidance(eps, rMin, epsRatio, rMinBodyIds, false)));
         }
 
         if (Double.isFinite(minDistBelow5Eps)) {
@@ -301,8 +337,121 @@ public final class ConfigValidator {
                     "初始距离小于近遇阈值，启动即进入 Close Encounter（不宣称一定发生碰撞）。"
                             + "最严重对为 " + minDistPair + "，距离="
                             + String.format(Locale.ROOT, "%.3e", minDistBelow5Eps) + " m。",
-                    RiskLevel.HIGH));
+                    RiskLevel.HIGH,
+                    closeDistanceGuidance(minDistBelow5Eps, eps, minDistBodyIds)));
         }
+    }
+
+    private static ConfigSummary summarize(SimulationConfig config) {
+        long maxCandidate = config.maxSteps() != null ? config.maxSteps() : Long.MAX_VALUE;
+        long targetCandidate = Long.MAX_VALUE;
+        if (config.targetSimulationTimeSeconds() != null) {
+            double raw = config.targetSimulationTimeSeconds() / config.timeStepSeconds();
+            targetCandidate = raw >= Long.MAX_VALUE ? Long.MAX_VALUE : (long) Math.ceil(raw);
+        }
+        LimitingEndCondition limiting = maxCandidate == targetCandidate
+                ? LimitingEndCondition.BOTH
+                : maxCandidate < targetCandidate
+                        ? LimitingEndCondition.MAX_STEPS
+                        : LimitingEndCondition.TARGET_TIME;
+        double minDistance = Double.POSITIVE_INFINITY;
+        List<String> pairIds = List.of();
+        for (int i = 0; i < config.bodies().size(); i++) {
+            BodySpec a = config.bodies().get(i);
+            for (int j = i + 1; j < config.bodies().size(); j++) {
+                BodySpec b = config.bodies().get(j);
+                double distance = b.position().subtract(a.position()).length();
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    pairIds = bodyIds(a, b);
+                }
+            }
+        }
+        Long steps = config.estimatedTotalSteps();
+        Double duration = steps == null ? null : steps * config.timeStepSeconds();
+        Double ratio = Double.isFinite(minDistance) && minDistance > 0.0
+                ? config.softeningLengthMeters() / minDistance
+                : null;
+        return new ConfigSummary(steps, duration, limiting,
+                Double.isFinite(minDistance) ? minDistance : null, pairIds, ratio);
+    }
+
+    private static double suggestedTimeStep(double currentDt, double periodRatio, double moveRate) {
+        double factor = 1.0;
+        if (periodRatio > 0.0 && Double.isFinite(periodRatio)) {
+            factor = Math.min(factor, PERIOD_RATE_CAUTION * GUIDANCE_MARGIN / periodRatio);
+        }
+        if (moveRate > 0.0 && Double.isFinite(moveRate)) {
+            factor = Math.min(factor, MOVE_RATE_CAUTION * GUIDANCE_MARGIN / moveRate);
+        }
+        double suggested = currentDt * factor;
+        return suggested > 0.0 && Double.isFinite(suggested) ? suggested : currentDt / 10.0;
+    }
+
+    private static List<GuidanceEvidence> timeStepEvidence(double dt, double suggestedDt,
+            double minPeriod, double minPeriodRatio, List<String> minPeriodBodyIds,
+            double moveDistance, double moveReference, double moveRate, List<String> moveBodyIds) {
+        List<GuidanceEvidence> evidence = new ArrayList<>();
+        evidence.add(new GuidanceEvidence("TIME_STEP_SECONDS", dt, suggestedDt, null, List.of()));
+        if (Double.isFinite(minPeriod) && Double.isFinite(minPeriodRatio)) {
+            evidence.add(new GuidanceEvidence("LOCAL_PERIOD_SECONDS", minPeriod,
+                    minPeriod * PERIOD_RATE_CAUTION, minPeriodRatio, minPeriodBodyIds));
+        }
+        if (Double.isFinite(moveDistance) && Double.isFinite(moveReference) && Double.isFinite(moveRate)) {
+            evidence.add(new GuidanceEvidence("ONE_STEP_RELATIVE_MOVEMENT_METERS", moveDistance,
+                    moveReference, moveRate, moveBodyIds));
+        }
+        return evidence;
+    }
+
+    private static ValidationGuidance speedGuidance(SpeedEscape worst, RiskLevel level) {
+        return new ValidationGuidance(
+                "天体 " + worst.name() + " 相对其余系统向外运动，速度超过局部逃逸尺度。",
+                "系统可能很快变成非束缚状态；这可以是有意的物理初始条件，并不等于程序错误。",
+                List.of(new GuidanceEvidence("SPEED_TO_ESCAPE_RATIO", worst.speedRate(), 1.0,
+                        worst.speedRate(), List.of(worst.bodyId()))),
+                new GuidanceAction("REVIEW_INITIAL_VELOCITY", GuidanceActionMode.MANUAL_REVIEW,
+                        "检查该天体的初始速度", "确认速度大小和方向是否符合实验目的。",
+                        "修改速度会改变所研究的物理系统。", null, null),
+                level == RiskLevel.HIGH
+                        ? List.of(new GuidanceAction("RUN_AS_UNBOUND_SYSTEM", GuidanceActionMode.MANUAL_REVIEW,
+                                "保留配置并观察逃逸", "若目标就是研究非束缚系统，可以保留当前设置。",
+                                "结果应被解释为主动选择的非束缚初始条件。", null, null))
+                        : List.of());
+    }
+
+    private static ValidationGuidance softeningGuidance(double eps, double rMin, double ratio,
+            List<String> bodyIds, boolean tooSmall) {
+        return new ValidationGuidance(
+                tooSmall ? "软化长度相对初始最近距离很小。" : "软化长度已接近初始最近距离的显著比例。",
+                tooSmall
+                        ? "近遇时引力变化会更尖锐，需要更小时间步长；软化为 0 时也不会生成近遇阈值事件。"
+                        : "近距离引力会被明显平滑，可能改变要研究的物理模型。",
+                List.of(new GuidanceEvidence("SOFTENING_LENGTH_METERS", eps, rMin, ratio, bodyIds)),
+                new GuidanceAction("REVIEW_SOFTENING", GuidanceActionMode.MANUAL_REVIEW,
+                        "人工检查软化长度", "结合希望分辨的最近距离选择软化尺度。",
+                        "修改软化长度会改变近距离物理模型，因此系统不会自动应用。", null, null),
+                List.of());
+    }
+
+    private static ValidationGuidance closeDistanceGuidance(double distance, double eps,
+            List<String> bodyIds) {
+        return new ValidationGuidance(
+                "一对天体在模拟开始时已经位于近遇阈值内。",
+                "运行会从近距离强相互作用开始；这不表示一定碰撞，但会提高时间分辨率要求。",
+                List.of(new GuidanceEvidence("INITIAL_PAIR_DISTANCE_METERS", distance,
+                        PhysicalConstants.NEAR_ENCOUNTER_SOFTENING_FACTOR * eps,
+                        eps > 0.0 ? distance / eps : null, bodyIds)),
+                new GuidanceAction("REVIEW_INITIAL_POSITION", GuidanceActionMode.MANUAL_REVIEW,
+                        "检查初始位置", "确认这种近距离起始状态是否符合实验目的。",
+                        "修改位置会改变研究问题，系统不会自动应用。", null, null),
+                List.of(new GuidanceAction("REDUCE_TIME_STEP_FOR_ENCOUNTER", GuidanceActionMode.MANUAL_REVIEW,
+                        "考虑减小时间步长", "若保留近距离起点，更小步长通常能更好分辨快速变化。",
+                        "积分步数和计算量会增加。", null, null)));
+    }
+
+    private static List<String> bodyIds(BodySpec a, BodySpec b) {
+        return List.of(a.id(), b.id());
     }
 
     private static String fieldForPair(List<BodySpec> bodies, String pairName, String suffix) {
@@ -380,13 +529,13 @@ public final class ConfigValidator {
                 continue;
             }
             if (worst == null || speedRate > worst.speedRate()) {
-                worst = new SpeedEscape(i, safeName(body), speedRate);
+                worst = new SpeedEscape(i, body.id(), safeName(body), speedRate);
             }
         }
         return worst;
     }
 
-    private record SpeedEscape(int index, String name, double speedRate) {}
+    private record SpeedEscape(int index, String bodyId, String name, double speedRate) {}
 
     /**
      * 补齐天体 ID 与颜色。

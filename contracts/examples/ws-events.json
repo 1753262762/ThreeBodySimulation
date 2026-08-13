@@ -95,9 +95,42 @@
   },
   {
     "schemaVersion": "1.1",
-    "type": "NEAR_ENCOUNTER",
+    "type": "HEALTH",
     "experimentId": "9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
     "sequence": 5,
+    "timestamp": "2026-08-10T09:12:46.513Z",
+    "payload": {
+      "status": "GOOD",
+      "metrics": {
+        "currentEnergyDrift": 1.2e-7,
+        "peakEnergyDrift": 1.2e-7,
+        "peakEnergyDriftStep": 180,
+        "peakEnergyDriftSimulationTimeSeconds": 7776000,
+        "currentAngularMomentumDrift": 8e-8,
+        "peakAngularMomentumDrift": 8e-8,
+        "peakAngularMomentumDriftStep": 180,
+        "peakAngularMomentumDriftSimulationTimeSeconds": 7776000,
+        "energyTrend": "STABLE",
+        "angularMomentumTrend": "STABLE",
+        "closestApproachMeters": 3.9012e11,
+        "closeEncounterCount": 0,
+        "latestCloseEncounter": null
+      },
+      "thresholds": { "energyWarning": 0.001, "energyPoor": 0.01, "angularMomentumWarning": 0.001, "angularMomentumPoor": 0.01 },
+      "reasons": [{ "code": "CONSERVATION_WITHIN_TOLERANCE", "severity": "INFO", "metric": null, "message": "Sampled conservation drift remains within tolerance." }],
+      "recommendations": [],
+      "failure": null,
+      "analyzedStep": 180,
+      "analyzedSimulationTimeSeconds": 7776000,
+      "sampleStride": 49,
+      "sampleCount": 4
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "type": "NEAR_ENCOUNTER",
+    "experimentId": "9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+    "sequence": 6,
     "timestamp": "2026-08-10T09:15:02.884Z",
     "payload": {
       "event": {

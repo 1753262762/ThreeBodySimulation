@@ -2,6 +2,8 @@
   "id": "9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
   "name": "EXP-2026-0810 · 混沌轨道稳定性",
   "status": "RUNNING",
+  "healthStatus": "GOOD",
+  "lineage": null,
   "queuePosition": 0,
   "createdAt": "2026-08-10T09:12:44Z",
   "updatedAt": "2026-08-10T09:18:07Z",
@@ -62,6 +64,45 @@
     "stepsPerSecond": 5820.4,
     "elapsedWallClockSeconds": 3.172
   },
+  "healthReport": {
+    "status": "GOOD",
+    "metrics": {
+      "currentEnergyDrift": 0.000021,
+      "peakEnergyDrift": 0.00031,
+      "peakEnergyDriftStep": 9042,
+      "peakEnergyDriftSimulationTimeSeconds": 390614400,
+      "currentAngularMomentumDrift": 0.000018,
+      "peakAngularMomentumDrift": 0.00027,
+      "peakAngularMomentumDriftStep": 9042,
+      "peakAngularMomentumDriftSimulationTimeSeconds": 390614400,
+      "energyTrend": "STABLE",
+      "angularMomentumTrend": "STABLE",
+      "closestApproachMeters": 384020000,
+      "closeEncounterCount": 1,
+      "latestCloseEncounter": null
+    },
+    "thresholds": {
+      "energyWarning": 0.001,
+      "energyPoor": 0.01,
+      "angularMomentumWarning": 0.001,
+      "angularMomentumPoor": 0.01
+    },
+    "reasons": [
+      {
+        "code": "CONSERVATION_WITHIN_TOLERANCE",
+        "severity": "INFO",
+        "metric": null,
+        "message": "Sampled conservation drift remains within the configured project tolerance."
+      }
+    ],
+    "recommendations": [],
+    "failure": null,
+    "analyzedStep": 18462,
+    "analyzedSimulationTimeSeconds": 797558400,
+    "sampleStride": 49,
+    "sampleCount": 378
+  },
+
   "trajectory": {
     "sampleStride": 4,
     "sampleCount": 4615,

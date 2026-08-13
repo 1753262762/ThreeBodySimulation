@@ -10,6 +10,7 @@ import {
   type EventPhase,
   type Experiment,
   type ExperimentStatus,
+  type ExperimentLineage,
   type ExperimentSummary,
   type HistoryResponse,
   type Metrics,
@@ -20,10 +21,12 @@ import {
   type SimulationConfig,
   type SimulationEvent,
   type SimulationState,
+  type SimulationHealthReport,
   type Vector3,
 } from '../contracts'
 import { closestPair, computeMetrics, rk4Step, type MockBody, type MockState } from './mockEngine'
 import presetsFixture from '../../../contracts/examples/presets.json'
+import { failMockHealth, updateMockHealth } from './mockHealth'
 
 const ARCHIVE_LIMIT = 50000
 const LIVE_WINDOW = 8000
@@ -60,6 +63,9 @@ interface MockRecord {
   config: SimulationConfig
   state: MockState
   metrics: Metrics | null
+  initialMetrics: Metrics | null
+  healthReport: SimulationHealthReport | null
+  lineage: ExperimentLineage | null
   initialTotalEnergy: number | null
   allTimeMinimum: { distanceMeters: number; step: number } | null
   events: SimulationEvent[]
@@ -125,7 +131,8 @@ export function normalizeConfig(config: SimulationConfig): SimulationConfig {
   }
 }
 
-export function createRecord(config: SimulationConfig, name?: string): MockRecord {
+export function createRecord(config: SimulationConfig, name?: string,
+  lineage: ExperimentLineage | null = null): MockRecord {
   const normalized = normalizeConfig(config)
   const id = nextId()
   queueCounter += 1
@@ -140,6 +147,9 @@ export function createRecord(config: SimulationConfig, name?: string): MockRecor
       bodies: toMockBodies(normalized),
     },
     metrics: null,
+    initialMetrics: null,
+    healthReport: null,
+    lineage,
     initialTotalEnergy: null,
     allTimeMinimum: null,
     events: [],
@@ -161,6 +171,8 @@ export function createRecord(config: SimulationConfig, name?: string): MockRecor
   const metrics = computeMetrics(record.state, normalized, null, null, null, 0)
   record.initialTotalEnergy = metrics.totalEnergyJoules
   record.metrics = metrics
+  record.initialMetrics = metrics
+  record.healthReport = updateMockHealth(normalized, metrics, metrics, null, 0, 0)
   recordSample(record)
   records.set(id, record)
   return record
@@ -597,6 +609,8 @@ export function advance(record: MockRecord, steps: number): AdvanceOutcome {
       record.errorCode = 'NUMERICAL_INSTABILITY'
       record.errorMessage = outcome.failure
       record.completedAt = nowIso()
+      record.healthReport = failMockHealth(record.healthReport, record.state.step,
+        record.state.simulationTimeSeconds, outcome.failure)
       addEvent(record, 'ERROR', outcome.failure)
       return outcome
     }
@@ -623,6 +637,10 @@ export function advance(record: MockRecord, steps: number): AdvanceOutcome {
       1 / Math.max(1e-6, record.config.timeStepSeconds / 1e6),
       record.wallClockSeconds,
     )
+    if (record.initialMetrics) {
+      record.healthReport = updateMockHealth(record.config, record.initialMetrics, record.metrics,
+        record.healthReport, record.state.step, record.state.simulationTimeSeconds)
+    }
 
     if (record.state.step % sampleInterval === 0) {
       recordSample(record)
@@ -679,6 +697,8 @@ export function toSummary(record: MockRecord): ExperimentSummary {
     endReason: record.endReason,
     storageBytes: record.samples.length * 320,
     errorCode: record.errorCode,
+    healthStatus: record.healthReport?.status ?? null,
+    lineage: record.lineage,
   }
 }
 
@@ -696,6 +716,8 @@ export function toExperiment(record: MockRecord): Experiment {
       })),
     },
     metrics: record.metrics,
+    healthReport: record.healthReport,
+    lineage: record.lineage,
     trajectory: {
       sampleStride: record.sampleStride,
       sampleCount: record.samples.length,

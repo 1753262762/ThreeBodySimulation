@@ -1,61 +1,49 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
-import type { Metrics, SimulationConfig } from '../../contracts'
+import type { Metrics, SimulationHealthReport } from '../../contracts'
 import KpiCards from '../KpiCards.vue'
 
-const config: SimulationConfig = {
-  name: 'KPI 测试',
-  timeStepSeconds: 1,
-  gravitationalConstant: 1,
-  softeningLengthMeters: 0.1,
-  maxSteps: 100,
-  targetSimulationTimeSeconds: null,
-  bodies: [
-    {
-      id: 'a', name: 'A', color: '#ffffff', massKg: 2,
-      position: { x: 1, y: 0, z: 0 }, velocity: { x: 0, y: 1, z: 0 },
-    },
-  ],
+const metrics: Metrics = {
+  kineticEnergyJoules: 1, potentialEnergyJoules: -101, totalEnergyJoules: -100,
+  initialTotalEnergyJoules: -100, relativeEnergyDrift: 0.02,
+  angularMomentum: { x: 0, y: 0, z: 2 }, angularMomentumMagnitude: 2,
+  linearMomentum: { x: 0, y: 0, z: 0 }, linearMomentumMagnitude: 0,
+  minimumPairDistanceMeters: 2,
 }
-
-function metrics(angularX: number, energyDrift = 0): Metrics {
-  return {
-    kineticEnergyJoules: 0,
-    potentialEnergyJoules: 0,
-    totalEnergyJoules: -100 + 100 * energyDrift,
-    initialTotalEnergyJoules: -100,
-    relativeEnergyDrift: energyDrift,
-    angularMomentum: { x: angularX, y: 0, z: 2 },
-    angularMomentumMagnitude: Math.hypot(angularX, 2),
-    linearMomentum: { x: 0, y: 0, z: 0 },
-    linearMomentumMagnitude: 0,
-    minimumPairDistanceMeters: 0,
-  }
+const health: SimulationHealthReport = {
+  status: 'WARNING',
+  metrics: {
+    currentEnergyDrift: 0.0002, peakEnergyDrift: 0.002,
+    peakEnergyDriftStep: 8, peakEnergyDriftSimulationTimeSeconds: 800,
+    currentAngularMomentumDrift: 0.0001, peakAngularMomentumDrift: 0.0015,
+    peakAngularMomentumDriftStep: 7, peakAngularMomentumDriftSimulationTimeSeconds: 700,
+    energyTrend: 'STABLE', angularMomentumTrend: 'SLOWLY_INCREASING',
+    closestApproachMeters: 2, closeEncounterCount: 1, latestCloseEncounter: null,
+  },
+  thresholds: { energyWarning: 0.001, energyPoor: 0.01, angularMomentumWarning: 0.001, angularMomentumPoor: 0.01 },
+  reasons: [{ code: 'ENERGY_DRIFT_ELEVATED', severity: 'WARNING', metric: 'energy', message: 'Peak drift crossed tolerance.' }],
+  recommendations: [{ code: 'REDUCE_TIME_STEP', action: 'CLONE_AND_RETRY', message: 'Suggested Experiment', configPatch: { timeStepSeconds: 10 } }],
+  failure: null, analyzedStep: 10, analyzedSimulationTimeSeconds: 1000, sampleStride: 1, sampleCount: 11,
 }
 
 describe('KpiCards', () => {
-  it('总能量与角动量使用相同的初始值和漂移状态结构', () => {
+  it('renders authoritative Health without classifying instantaneous metric drift', async () => {
     const wrapper = mount(KpiCards, {
-      props: { config, metrics: metrics(0, -0.02), step: 10, simulationTimeSeconds: 10 },
+      props: { metrics, health },
     })
-    const energy = wrapper.get('.total-energy-kpi')
-    expect(energy.text()).toContain('初始 -100')
-    expect(energy.get('em').text()).toBe('-2% 漂移 · 警告')
-    expect(energy.classes()).toContain('health-warning')
+    expect(wrapper.get('.total-energy-kpi').classes()).not.toContain('health-warning')
+    expect(wrapper.get('.health-card-summary').text()).toContain('需要谨慎解读')
+    await wrapper.get('.health-card-summary').trigger('click')
+    expect(wrapper.text()).toContain('0.2%')
+    expect(wrapper.text()).toContain('能量漂移峰值超过注意阈值')
   })
 
-  it('展示初始角动量、实时漂移和告警等级', async () => {
+  it('emits the backend recommendation time step for clone and retry', async () => {
     const wrapper = mount(KpiCards, {
-      props: { config, metrics: metrics(0.04), step: 10, simulationTimeSeconds: 10 },
+      props: { metrics, health },
     })
-    const angular = wrapper.get('.angular-momentum-kpi')
-    expect(angular.text()).toContain('初始 2')
-    expect(angular.text()).toContain('+2% 漂移')
-    expect(angular.get('em').text()).toBe('+2% 漂移 · 警告')
-    expect(angular.classes()).toContain('health-warning')
-
-    await wrapper.setProps({ metrics: metrics(0) })
-    expect(angular.get('em').text()).toBe('0% 漂移 · 稳定')
-    expect(angular.classes()).toContain('health-stable')
+    await wrapper.get('.health-card-summary').trigger('click')
+    await wrapper.get('.health-clone-button').trigger('click')
+    expect(wrapper.emitted('cloneRetry')).toEqual([[10]])
   })
 })

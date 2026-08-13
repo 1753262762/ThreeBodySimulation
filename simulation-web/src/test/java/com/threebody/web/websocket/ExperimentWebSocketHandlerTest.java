@@ -101,6 +101,35 @@ class ExperimentWebSocketHandlerTest {
         }
     }
 
+    @Test
+    void healthIsSerializedAsIndependentVersion11Message() throws Exception {
+        ExperimentService service = mock(ExperimentService.class);
+        ExperimentWebSocketHandler handler = new ExperimentWebSocketHandler(service);
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.getId()).thenReturn("session-health");
+        when(session.getUri()).thenReturn(URI.create("/ws/v1/experiments/experiment"));
+        when(session.isOpen()).thenReturn(true);
+        AtomicReference<String> jsonRef = new AtomicReference<>();
+        doAnswer(invocation -> {
+            jsonRef.set(((TextMessage) invocation.getArgument(0)).getPayload());
+            return null;
+        }).when(session).sendMessage(any(TextMessage.class));
+
+        try {
+            handler.afterConnectionEstablished(session);
+            handler.onMessage(new ExperimentMessage(ExperimentMessageType.HEALTH,
+                    "experiment", 8L, Instant.EPOCH, Map.of("status", "WARNING")));
+            assertTrue(waitForJson(jsonRef));
+            var envelope = new ObjectMapper().readTree(jsonRef.get());
+            org.junit.jupiter.api.Assertions.assertEquals("1.1", envelope.get("schemaVersion").asText());
+            org.junit.jupiter.api.Assertions.assertEquals("HEALTH", envelope.get("type").asText());
+            org.junit.jupiter.api.Assertions.assertEquals("WARNING",
+                    envelope.get("payload").get("status").asText());
+        } finally {
+            handler.close();
+        }
+    }
+
     private static boolean waitForJson(AtomicReference<String> ref) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 2_000L;
         while (System.currentTimeMillis() < deadline) {

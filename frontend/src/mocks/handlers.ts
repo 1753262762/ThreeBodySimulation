@@ -15,6 +15,7 @@ import type {
   RiskLevel,
   SimulationConfig,
   ValidationIssue,
+  ValidationGuidance,
   ValidationResult,
 } from '../contracts'
 import { MAX_BODY_COUNT, MIN_BODY_COUNT, isActionAllowed } from '../contracts'
@@ -62,7 +63,8 @@ export function validateConfig(config: SimulationConfig): ValidationResult {
     message: string,
     severity: ValidationIssue['severity'] = 'ERROR',
     riskLevel: RiskLevel | null = null,
-  ) => issues.push({ field, code, message, severity, riskLevel })
+    guidance: ValidationGuidance | null = null,
+  ) => issues.push({ field, code, message, severity, riskLevel, guidance })
 
   if (!Array.isArray(config.bodies) || config.bodies.length < MIN_BODY_COUNT || config.bodies.length > MAX_BODY_COUNT) {
     push('bodies', 'BODY_COUNT_OUT_OF_RANGE', `天体数量必须介于 ${MIN_BODY_COUNT} 与 ${MAX_BODY_COUNT} 之间。`)
@@ -133,16 +135,53 @@ export function validateConfig(config: SimulationConfig): ValidationResult {
   }
 
   const valid = !issues.some((item) => item.severity === 'ERROR')
+  const normalized = valid ? normalizeConfig(config) : null
+  const estimatedSteps = valid
+    ? Math.min(
+        config.maxSteps ?? Number.POSITIVE_INFINITY,
+        config.targetSimulationTimeSeconds == null
+          ? Number.POSITIVE_INFINITY
+          : Math.ceil(config.targetSimulationTimeSeconds / config.timeStepSeconds),
+      )
+    : null
+  let nearest: { distance: number; ids: string[] } | null = null
+  if (normalized) {
+    for (let i = 0; i < normalized.bodies.length; i += 1) {
+      for (let j = i + 1; j < normalized.bodies.length; j += 1) {
+        const a = normalized.bodies[i]
+        const b = normalized.bodies[j]
+        const distance = Math.hypot(
+          b.position.x - a.position.x,
+          b.position.y - a.position.y,
+          b.position.z - a.position.z,
+        )
+        if (!nearest || distance < nearest.distance) nearest = { distance, ids: [a.id!, b.id!] }
+      }
+    }
+  }
+  const maxCandidate = config.maxSteps ?? Number.POSITIVE_INFINITY
+  const targetCandidate = config.targetSimulationTimeSeconds == null
+    ? Number.POSITIVE_INFINITY
+    : Math.ceil(config.targetSimulationTimeSeconds / config.timeStepSeconds)
   return {
     valid,
     issues,
-    normalizedConfig: valid ? normalizeConfig(config) : null,
-    estimatedSteps: valid
-      ? (config.maxSteps ??
-        (config.targetSimulationTimeSeconds
-          ? Math.ceil(config.targetSimulationTimeSeconds / config.timeStepSeconds)
-          : null))
-      : null,
+    normalizedConfig: normalized,
+    estimatedSteps: Number.isFinite(estimatedSteps) ? estimatedSteps : null,
+    configSummary: valid ? {
+      estimatedSteps: Number.isFinite(estimatedSteps) ? estimatedSteps : null,
+      estimatedSimulationTimeSeconds: Number.isFinite(estimatedSteps)
+        ? estimatedSteps! * config.timeStepSeconds
+        : null,
+      limitingEndCondition: maxCandidate === targetCandidate
+        ? 'BOTH'
+        : maxCandidate < targetCandidate ? 'MAX_STEPS' : 'TARGET_TIME',
+      initialMinimumPairDistanceMeters: nearest?.distance ?? null,
+      initialMinimumPairBodyIds: nearest?.ids ?? [],
+      softeningToInitialDistanceRatio: nearest && nearest.distance > 0
+        ? config.softeningLengthMeters / nearest.distance
+        : null,
+    } : null,
   }
 }
 
@@ -168,6 +207,7 @@ function addRiskWarnings(
     message: string,
     severity: ValidationIssue['severity'],
     riskLevel: RiskLevel,
+    guidance?: ValidationGuidance | null,
   ) => void,
 ): void {
   const bodies = config.bodies
@@ -226,12 +266,40 @@ function addRiskWarnings(
   const dtCaution = dt > minPeriodPair.period / 100 || worstMovePair.moveRate > 0.05
   if (dtHigh || dtCaution) {
     const stepsPerPeriod = minPeriodPair.period / dt
+    const periodRatio = dt / minPeriodPair.period
+    const suggestedDt = dt * Math.min(
+      1,
+      0.009 / periodRatio,
+      worstMovePair.moveRate > 0 ? 0.045 / worstMovePair.moveRate : 1,
+    )
+    const ids = (pair: RiskPair) => [bodies[pair.i].id!, bodies[pair.j].id!]
     push(
       'timeStepSeconds',
       'TIME_STEP_TOO_LARGE',
       `时间步长 ${dt.toExponential(3)} s 相对最近轨道周期 ${minPeriodPair.period.toExponential(3)} s 偏大（${name(minPeriodPair.i)} 与 ${name(minPeriodPair.j)}，约每周期 ${stepsPerPeriod.toFixed(1)} 步、单步位移/间距约 ${worstMovePair.moveRate.toExponential(3)}），长期积分可能出现明显能量漂移；减小步长会增加计算量但通常改善稳定性。`,
       'WARNING',
       dtHigh ? 'HIGH' : 'CAUTION',
+      {
+        observation: '当前时间步长相对系统中最快的局部运动偏大。',
+        impact: '一次积分可能跨过过多轨道变化，使守恒量漂移增大，甚至导致数值失败。',
+        evidence: [
+          { code: 'TIME_STEP_SECONDS', value: dt, referenceValue: suggestedDt, ratio: null, bodyIds: [] },
+          { code: 'LOCAL_PERIOD_SECONDS', value: minPeriodPair.period, referenceValue: minPeriodPair.period * 0.01, ratio: periodRatio, bodyIds: ids(minPeriodPair) },
+          { code: 'ONE_STEP_RELATIVE_MOVEMENT_METERS', value: worstMovePair.moveRate * worstMovePair.rEff, referenceValue: worstMovePair.rEff, ratio: worstMovePair.moveRate, bodyIds: ids(worstMovePair) },
+        ],
+        primaryAction: {
+          code: 'REDUCE_TIME_STEP', mode: 'APPLY_PATCH', label: '减小时间步长',
+          rationale: '让局部周期比例和单步位移比例回到注意阈值以内。',
+          tradeoff: '为保持相同模拟时长，积分步数和计算量会增加。',
+          configPatch: { timeStepSeconds: suggestedDt, maxSteps: null },
+          adjustmentPolicy: 'PRESERVE_SIMULATION_DURATION',
+        },
+        alternatives: [{
+          code: 'REVIEW_FASTEST_PAIR', mode: 'MANUAL_REVIEW', label: '检查最快变化的天体对',
+          rationale: '确认当前初始位置和速度是否符合实验目的。',
+          tradeoff: '修改初始条件会改变研究问题。', configPatch: null, adjustmentPolicy: null,
+        }],
+      },
     )
   }
 
@@ -340,7 +408,54 @@ export const handlers = [
     if (!validation.valid) {
       return errorResponse(400, 'VALIDATION_FAILED', '配置未通过校验。', validation.issues)
     }
-    const record = createRecord(payload.config, payload.name)
+    let lineage = null
+    if (payload.retryContext) {
+      const sourceRecord = getRecord(payload.retryContext.sourceExperimentId)
+      if (!sourceRecord) return errorResponse(400, 'INVALID_RETRY_CONTEXT', '源运行记录不存在。')
+      const source = toExperiment(sourceRecord)
+      const recommendation = source.healthReport?.recommendations.find(
+        (item) => item.code === payload.retryContext?.recommendationCode,
+      )
+      if (!recommendation) return errorResponse(400, 'INVALID_RETRY_CONTEXT', '源运行记录没有当前建议。')
+      const after = normalizeConfig(payload.config)
+      const beforeSteps = Math.min(
+        source.config.maxSteps ?? Number.POSITIVE_INFINITY,
+        source.config.targetSimulationTimeSeconds == null ? Number.POSITIVE_INFINITY : Math.ceil(source.config.targetSimulationTimeSeconds / source.config.timeStepSeconds),
+      )
+      const afterSteps = Math.min(
+        after.maxSteps ?? Number.POSITIVE_INFINITY,
+        after.targetSimulationTimeSeconds == null ? Number.POSITIVE_INFINITY : Math.ceil(after.targetSimulationTimeSeconds / after.timeStepSeconds),
+      )
+      const changedFields = [
+        source.config.timeStepSeconds !== after.timeStepSeconds ? 'timeStepSeconds' : null,
+        source.config.maxSteps !== after.maxSteps ? 'maxSteps' : null,
+        source.config.targetSimulationTimeSeconds !== after.targetSimulationTimeSeconds ? 'targetSimulationTimeSeconds' : null,
+        source.config.softeningLengthMeters !== after.softeningLengthMeters ? 'softeningLengthMeters' : null,
+        source.config.gravitationalConstant !== after.gravitationalConstant ? 'gravitationalConstant' : null,
+        JSON.stringify(source.config.bodies) !== JSON.stringify(after.bodies) ? 'bodies' : null,
+      ].filter((item): item is string => item != null)
+      lineage = {
+        sourceExperimentId: source.id,
+        sourceExperimentName: source.name,
+        rootExperimentId: source.lineage?.rootExperimentId ?? source.id,
+        retryDepth: (source.lineage?.retryDepth ?? 0) + 1,
+        recommendationCode: payload.retryContext.recommendationCode,
+        strategy: payload.retryContext.strategy,
+        beforeTimeStepSeconds: source.config.timeStepSeconds,
+        afterTimeStepSeconds: after.timeStepSeconds,
+        beforeMaxSteps: source.config.maxSteps ?? null,
+        afterMaxSteps: after.maxSteps ?? null,
+        beforeTargetSimulationTimeSeconds: source.config.targetSimulationTimeSeconds ?? null,
+        afterTargetSimulationTimeSeconds: after.targetSimulationTimeSeconds ?? null,
+        beforeEstimatedSimulationTimeSeconds: beforeSteps * source.config.timeStepSeconds,
+        afterEstimatedSimulationTimeSeconds: afterSteps * after.timeStepSeconds,
+        beforeEstimatedSteps: beforeSteps,
+        afterEstimatedSteps: afterSteps,
+        changedFields,
+        sourceHealthStatus: source.healthStatus ?? null,
+      }
+    }
+    const record = createRecord(payload.config, payload.name, lineage)
     startMockScheduler()
     return HttpResponse.json(toExperiment(record), {
       status: 201,

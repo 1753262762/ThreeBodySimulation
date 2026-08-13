@@ -16,6 +16,13 @@ class AsyncExperimentEventDispatcherTest {
     private static final String EXPERIMENT_ID = "experiment";
 
     @Test
+    void healthUsesItsOwnLatestWinsSlot() {
+        ExperimentMessage health = message(ExperimentMessageType.HEALTH, 1L);
+        assertEquals("HEALTH", health.mergeKey());
+        assertEquals("METRICS", message(ExperimentMessageType.METRICS, 2L).mergeKey());
+    }
+
+    @Test
     void reliableMessagesRemainInSequenceOrder() throws Exception {
         try (AsyncExperimentEventDispatcher dispatcher = new AsyncExperimentEventDispatcher(16)) {
             List<Long> sequences = new CopyOnWriteArrayList<>();

@@ -101,6 +101,9 @@ test('创建实验后实时状态可暂停并继续', async ({ page }) => {
   await page.getByLabel('实验名称', { exact: true }).fill('Playwright 验收实验')
   await page.getByLabel('最大步数', { exact: true }).fill('2000000')
   await page.getByRole('button', { name: '应用参数并开始实验', exact: true }).click()
+  const warning = page.getByRole('dialog', { name: '存在运行风险' })
+  await expect(warning).toBeVisible()
+  await warning.getByRole('button', { name: '理解风险，仍按原配置运行', exact: true }).click()
 
   await expect(page).toHaveURL(/\/experiments\/[0-9a-f-]+$/)
   await expect(page.getByText('状态：RUNNING', { exact: true })).toBeVisible({ timeout: 10_000 })

@@ -11,8 +11,16 @@
  * - Warning 需用户显式确认后才允许创建（warningsConfirmed 随配置指纹失效）。
  */
 import { defineStore } from 'pinia'
-import { computed, ref, watch } from 'vue'
-import type { Preset, PresetKey, SimulationConfig, ValidationIssue, ValidationResult } from '../contracts'
+import { computed, onScopeDispose, ref, watch } from 'vue'
+import type {
+  ExperimentRetryContext,
+  GuidanceAction,
+  Preset,
+  PresetKey,
+  SimulationConfig,
+  ValidationIssue,
+  ValidationResult,
+} from '../contracts'
 import { ApiError, api } from '../lib/apiClient'
 import {
   configToDraft,
@@ -24,6 +32,12 @@ import {
 } from '../lib/configDraft'
 import { MAX_BODY_COUNT, MIN_BODY_COUNT } from '../contracts'
 import type { UnitSystem } from '../lib/units'
+import {
+  planComparisonExperiment,
+  resolveStepLimit,
+  type ComparisonExperimentPlan,
+  type StepLimitResolution,
+} from '../lib/comparisonExperiment'
 
 /** 服务端不可用时也要能编辑参数，因此内置一份与契约示例一致的兜底配置。 */
 const FALLBACK_CONFIG: SimulationConfig = {
@@ -78,12 +92,19 @@ export const useDraftStore = defineStore('draft', () => {
   const serverValidation = ref<ValidationResult | null>(null)
   const validating = ref(false)
   const validationError = ref<string | null>(null)
+  const guidanceApplyError = ref<string | null>(null)
   /** 创建请求独立 pending，防止双击重复创建。 */
   const creating = ref(false)
   /** Warning 确认：草稿变化或配置指纹变化后失效。 */
   const warningsConfirmed = ref(false)
   /** 最近一次服务端校验对应的配置指纹。 */
   const validatedFingerprint = ref<string | null>(null)
+  const pendingRetryContext = ref<ExperimentRetryContext | null>(null)
+  const retrySourceConfig = ref<SimulationConfig | null>(null)
+  const retrySourceName = ref<string | null>(null)
+  const pendingGuidancePlan = ref<ComparisonExperimentPlan | null>(null)
+  let validationGeneration = 0
+  let validationTimer: ReturnType<typeof setTimeout> | null = null
 
   /** 本地即时校验，输入过程中给出反馈。 */
   const localConversion = computed(() => draftToConfig(draft.value, unitSystem.value))
@@ -117,6 +138,17 @@ export const useDraftStore = defineStore('draft', () => {
     return JSON.stringify(current) !== JSON.stringify(appliedConfig.value)
   })
 
+  const retryAttributionLimited = computed(() => {
+    if (!retrySourceConfig.value || !pendingRetryContext.value) return false
+    const current = localConversion.value.config
+    if (!current) return false
+    const source = retrySourceConfig.value
+    return source.gravitationalConstant !== current.gravitationalConstant
+      || source.softeningLengthMeters !== current.softeningLengthMeters
+      || source.targetSimulationTimeSeconds !== current.targetSimulationTimeSeconds
+      || JSON.stringify(source.bodies) !== JSON.stringify(current.bodies)
+  })
+
   const issuesByField = computed(() => {
     const map = new Map<string, ValidationIssue[]>()
     for (const item of allIssues.value) {
@@ -131,8 +163,25 @@ export const useDraftStore = defineStore('draft', () => {
   watch(configFingerprint, () => {
     serverValidation.value = null
     validationError.value = null
+    guidanceApplyError.value = null
+    pendingGuidancePlan.value = null
     warningsConfirmed.value = false
     validatedFingerprint.value = null
+    validationGeneration += 1
+    validating.value = false
+    if (validationTimer) clearTimeout(validationTimer)
+    const config = localConversion.value.config
+    if (!config) return
+    const generation = validationGeneration
+    const fingerprint = configFingerprint.value
+    validationTimer = setTimeout(() => {
+      validationTimer = null
+      void validateSnapshot(config, fingerprint, generation)
+    }, 500)
+  }, { immediate: true })
+
+  onScopeDispose(() => {
+    if (validationTimer) clearTimeout(validationTimer)
   })
 
   function setUnitSystem(system: UnitSystem): void {
@@ -148,9 +197,21 @@ export const useDraftStore = defineStore('draft', () => {
     validationError.value = null
     warningsConfirmed.value = false
     validatedFingerprint.value = null
+    pendingRetryContext.value = null
+    retrySourceConfig.value = null
+    retrySourceName.value = null
     if (markApplied) {
       appliedConfig.value = JSON.parse(JSON.stringify(config)) as SimulationConfig
     }
+  }
+
+  function loadComparisonConfig(config: SimulationConfig, context: ExperimentRetryContext,
+    sourceName: string, sourceConfig: SimulationConfig): void {
+    selectedPresetKey.value = null
+    draft.value = configToDraft(config, unitSystem.value)
+    pendingRetryContext.value = context
+    retrySourceConfig.value = JSON.parse(JSON.stringify(sourceConfig)) as SimulationConfig
+    retrySourceName.value = sourceName
   }
 
   function applyPreset(key: string): void {
@@ -207,27 +268,85 @@ export const useDraftStore = defineStore('draft', () => {
    * 提交前调用服务端校验，返回完整结果。
    * 返回 null 表示本地配置不可用或校验请求失败（validationError 已记录）。
    */
-  async function validateWithServer(): Promise<ValidationResult | null> {
-    const config = localConversion.value.config
-    if (!config) return null
+  async function validateSnapshot(config: SimulationConfig, fingerprint: string,
+    generation: number): Promise<ValidationResult | null> {
     validating.value = true
     validationError.value = null
     try {
       const result = await api.validateConfig(config)
+      if (generation !== validationGeneration || fingerprint !== configFingerprint.value) return null
       serverValidation.value = result
-      validatedFingerprint.value = configFingerprint.value
+      validatedFingerprint.value = fingerprint
       return result
     } catch (error) {
+      if (generation !== validationGeneration || fingerprint !== configFingerprint.value) return null
       validationError.value = error instanceof ApiError ? error.message : '校验请求失败。'
       serverValidation.value = null
       return null
     } finally {
-      validating.value = false
+      if (generation === validationGeneration) validating.value = false
     }
+  }
+
+  async function validateWithServer(): Promise<ValidationResult | null> {
+    const config = localConversion.value.config
+    if (!config) return null
+    if (validationTimer) {
+      clearTimeout(validationTimer)
+      validationTimer = null
+    }
+    validationGeneration += 1
+    return validateSnapshot(config, configFingerprint.value, validationGeneration)
+  }
+
+  function applyGuidanceAction(action: GuidanceAction): boolean {
+    const current = localConversion.value.config
+    const nextDt = action.configPatch?.timeStepSeconds
+    if (!current || action.mode !== 'APPLY_PATCH' || nextDt == null) return false
+    const plan = planComparisonExperiment(current, nextDt)
+    if (plan.exceedsStepLimit) {
+      guidanceApplyError.value = '保持当前模拟时长会超过 100,000,000 步。请缩短模拟时长，或手动选择更大的时间步长。'
+      pendingGuidancePlan.value = plan
+      return false
+    }
+    const retryContext = pendingRetryContext.value
+    const sourceConfig = retrySourceConfig.value
+    const sourceName = retrySourceName.value
+    draft.value = configToDraft({ ...plan.proposedConfig, name: current.name }, unitSystem.value)
+    pendingRetryContext.value = retryContext
+    retrySourceConfig.value = sourceConfig
+    retrySourceName.value = sourceName
+    return true
+  }
+
+  function resolveGuidanceStepLimit(resolution: StepLimitResolution): void {
+    const plan = pendingGuidancePlan.value
+    if (!plan) return
+    const resolved = resolveStepLimit(plan, resolution)
+    const retryContext = pendingRetryContext.value
+    const sourceConfig = retrySourceConfig.value
+    const sourceName = retrySourceName.value
+    draft.value = configToDraft(resolved.proposedConfig, unitSystem.value)
+    pendingRetryContext.value = retryContext
+    retrySourceConfig.value = sourceConfig
+    retrySourceName.value = sourceName
+    pendingGuidancePlan.value = null
+    guidanceApplyError.value = null
+  }
+
+  function cancelGuidanceStepLimit(): void {
+    pendingGuidancePlan.value = null
+    guidanceApplyError.value = null
   }
 
   function markApplied(config: SimulationConfig): void {
     appliedConfig.value = JSON.parse(JSON.stringify(config)) as SimulationConfig
+  }
+
+  function clearRetryContext(): void {
+    pendingRetryContext.value = null
+    retrySourceConfig.value = null
+    retrySourceName.value = null
   }
 
   function resetToApplied(): void {
@@ -306,9 +425,15 @@ export const useDraftStore = defineStore('draft', () => {
     serverValidation,
     validating,
     validationError,
+    guidanceApplyError,
     creating,
     warningsConfirmed,
     validatedFingerprint,
+    pendingRetryContext,
+    retrySourceConfig,
+    retrySourceName,
+    retryAttributionLimited,
+    pendingGuidancePlan,
     configFingerprint,
     localIssues,
     allIssues,
@@ -320,6 +445,7 @@ export const useDraftStore = defineStore('draft', () => {
     localConversion,
     setUnitSystem,
     loadConfig,
+    loadComparisonConfig,
     applyPreset,
     addBody,
     duplicateBody,
@@ -327,7 +453,11 @@ export const useDraftStore = defineStore('draft', () => {
     moveBody,
     loadPresets,
     validateWithServer,
+    applyGuidanceAction,
+    resolveGuidanceStepLimit,
+    cancelGuidanceStepLimit,
     markApplied,
+    clearRetryContext,
     resetToApplied,
     confirmWarnings,
     dismissWarnings,

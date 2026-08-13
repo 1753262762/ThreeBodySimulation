@@ -17,10 +17,12 @@ import {
   type ExperimentAction,
   type ExperimentStatus,
   type ExperimentSummary,
+  type ExperimentRetryContext,
   type Metrics,
   type ReplayJob,
   type SimulationConfig,
   type SimulationEvent,
+  type SimulationHealthReport,
   type SimulationState,
 } from '../contracts'
 import { ApiError, api } from '../lib/apiClient'
@@ -85,6 +87,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
 
   const liveState = ref<SimulationState | null>(null)
   const liveMetrics = ref<Metrics | null>(null)
+  const liveHealthReport = ref<SimulationHealthReport | null>(null)
   const metricSamples = ref<MetricSample[]>([])
   const events = ref<SimulationEvent[]>([])
   /** 近距离事件的非阻塞提示队列，按稳定键消费后移除。 */
@@ -180,6 +183,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
   function resetLiveBuffers(): void {
     liveState.value = null
     liveMetrics.value = null
+    liveHealthReport.value = null
     metricSamples.value = []
     encounterAlerts.value = []
     trails.value = markRaw(new TrajectoryBuffer(LIVE_TRAIL_LIMIT))
@@ -256,6 +260,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
         clearPlaybackState()
         playbackBufferRef.value = markRaw(new PlaybackBuffer(experiment.config.bodies.map((b) => b.id ?? b.name)))
       }
+      liveHealthReport.value = experiment.healthReport ?? null
       if (experiment.state) {
         liveState.value = experiment.state
         snapshotBuffer.push(experiment.state)
@@ -768,6 +773,18 @@ export const useExperimentsStore = defineStore('experiments', () => {
           liveMetrics.value = payload
           appendMetricSample(payload, payload.step, payload.simulationTimeSeconds)
         },
+        onHealth: (payload: SimulationHealthReport) => {
+          if (resyncing) return
+          liveHealthReport.value = payload
+          if (current.value) current.value = {
+            ...current.value,
+            healthReport: payload,
+            healthStatus: payload.status,
+          }
+          summaries.value = summaries.value.map((summary) =>
+            summary.id === id ? { ...summary, healthStatus: payload.status } : summary,
+          )
+        },
         onStatus: (payload: StatusPayload) => {
           if (resyncing) return
           if (current.value) {
@@ -815,10 +832,11 @@ export const useExperimentsStore = defineStore('experiments', () => {
     encounterAlerts.value = encounterAlerts.value.filter((item) => item.key !== key)
   }
 
-  async function createExperiment(config: SimulationConfig, name?: string): Promise<Experiment | null> {
+  async function createExperiment(config: SimulationConfig, name?: string,
+    retryContext?: ExperimentRetryContext | null): Promise<Experiment | null> {
     actionError.value = null
     try {
-      const created = await api.createExperiment({ name, config })
+      const created = await api.createExperiment({ name, config, retryContext: retryContext ?? null })
       await loadList()
       return created
     } catch (error) {
@@ -938,6 +956,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     currentError,
     liveState,
     liveMetrics,
+    liveHealthReport,
     metricSamples,
     events,
     encounterAlerts,

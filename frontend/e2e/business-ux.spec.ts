@@ -9,7 +9,7 @@ test('Warning 二次确认：返回修改不创建，仍然运行只创建一次
 
   const dialog = page.getByRole('dialog', { name: '存在运行风险' })
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByText('softeningLengthMeters', { exact: true })).toBeVisible()
+  await expect(dialog).toContainText('软化长度')
 
   // 返回修改：弹窗关闭、不创建实验。
   await dialog.getByRole('button', { name: '返回修改', exact: true }).click()
@@ -20,7 +20,7 @@ test('Warning 二次确认：返回修改不创建，仍然运行只创建一次
   // 再次提交并仍然运行：只创建一个实验并进入详情页。
   await page.getByRole('button', { name: '应用参数并开始实验', exact: true }).click()
   await expect(dialog).toBeVisible()
-  await dialog.getByRole('button', { name: '仍然运行', exact: true }).click()
+  await dialog.getByRole('button', { name: '理解风险，仍按原配置运行', exact: true }).click()
 
   await expect(page).toHaveURL(/\/experiments\/[0-9a-f-]+$/)
   await expect(page.getByText('状态：RUNNING', { exact: true })).toBeVisible({ timeout: 10_000 })
@@ -34,6 +34,9 @@ test('四种观察模式与浅深主题切换', async ({ page }) => {
   // FOLLOW_BODY 需要有效目标天体，先创建一个默认实验。
   await page.getByLabel('实验名称', { exact: true }).fill('观察模式实验')
   await page.getByRole('button', { name: '应用参数并开始实验', exact: true }).click()
+  const warning = page.getByRole('dialog', { name: '存在运行风险' })
+  await expect(warning).toBeVisible()
+  await warning.getByRole('button', { name: '理解风险，仍按原配置运行', exact: true }).click()
   await expect(page).toHaveURL(/\/experiments\/[0-9a-f-]+$/)
   await expect(page.getByText('状态：RUNNING', { exact: true })).toBeVisible({ timeout: 10_000 })
 

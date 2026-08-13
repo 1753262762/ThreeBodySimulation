@@ -44,19 +44,20 @@ public final class NBodyIntegrator {
         fill(state, pos, vel);
 
         // RK4：位置导数为速度，速度导数为加速度
-        double[][] a1 = accelerations(config, masses, pos);
+        long nextStep = state.step() + 1;
+        double[][] a1 = accelerations(config, masses, pos, nextStep, state.simulationTimeSeconds());
 
         double[][] pos2 = advance(pos, vel, dt / 2.0);
         double[][] vel2 = advance(vel, a1, dt / 2.0);
-        double[][] a2 = accelerations(config, masses, pos2);
+        double[][] a2 = accelerations(config, masses, pos2, nextStep, state.simulationTimeSeconds() + dt / 2.0);
 
         double[][] pos3 = advance(pos, vel2, dt / 2.0);
         double[][] vel3 = advance(vel, a2, dt / 2.0);
-        double[][] a3 = accelerations(config, masses, pos3);
+        double[][] a3 = accelerations(config, masses, pos3, nextStep, state.simulationTimeSeconds() + dt / 2.0);
 
         double[][] pos4 = advance(pos, vel3, dt);
         double[][] vel4 = advance(vel, a3, dt);
-        double[][] a4 = accelerations(config, masses, pos4);
+        double[][] a4 = accelerations(config, masses, pos4, nextStep, state.simulationTimeSeconds() + dt);
 
         double[][] newPos = new double[n][3];
         double[][] newVel = new double[n][3];
@@ -68,16 +69,17 @@ public final class NBodyIntegrator {
             }
         }
 
-        long nextStep = state.step() + 1;
         List<BodyState> nextBodies = new ArrayList<>(n);
         List<BodySpec> specs = config.bodies();
         for (int i = 0; i < n; i++) {
             Vector3 p = new Vector3(newPos[i][0], newPos[i][1], newPos[i][2]);
             Vector3 v = new Vector3(newVel[i][0], newVel[i][1], newVel[i][2]);
             if (!p.isFinite() || !v.isFinite()) {
+                NonFiniteComponent component = firstNonFinite(p, v);
                 throw new NumericalInstabilityException(
                         "天体 " + specs.get(i).name() + " 在第 " + nextStep + " 步出现非有限数值，请减小时间步长或增大软化长度",
-                        nextStep);
+                        nextStep, specs.get(i).id(), component.field(),
+                        state.simulationTimeSeconds() + dt, component.value());
             }
             nextBodies.add(new BodyState(specs.get(i).id(), p, v));
         }
@@ -111,7 +113,8 @@ public final class NBodyIntegrator {
     /**
      * 计算软化引力加速度(m/s^2)。
      */
-    static double[][] accelerations(SimulationConfig config, double[] masses, double[][] pos) {
+    static double[][] accelerations(SimulationConfig config, double[] masses, double[][] pos,
+            long step, double simulationTimeSeconds) {
         int n = masses.length;
         double g = config.gravitationalConstant();
         double eps2 = config.softeningLengthMeters() * config.softeningLengthMeters();
@@ -128,7 +131,9 @@ public final class NBodyIntegrator {
                 if (!Double.isFinite(r2) || r2 <= 1e-300) {
                     throw new NumericalInstabilityException(
                             "天体间距过小，无法计算有限引力加速度；请增大软化长度",
-                            -1L);
+                            step, config.bodies().get(i).id() + "," + config.bodies().get(j).id(),
+                            "pairDistanceSquared", simulationTimeSeconds,
+                            Double.isFinite(r2) ? Double.toString(r2) : finiteValueText(r2));
                 }
                 double invR3 = 1.0 / (r2 * Math.sqrt(r2));
                 double factorI = g * masses[j] * invR3;
@@ -176,4 +181,22 @@ public final class NBodyIntegrator {
         }
         return out;
     }
+
+    private static NonFiniteComponent firstNonFinite(Vector3 position, Vector3 velocity) {
+        double[] values = {position.x(), position.y(), position.z(), velocity.x(), velocity.y(), velocity.z()};
+        String[] fields = {"position.x", "position.y", "position.z", "velocity.x", "velocity.y", "velocity.z"};
+        for (int i = 0; i < values.length; i++) {
+            if (!Double.isFinite(values[i])) {
+                return new NonFiniteComponent(fields[i], finiteValueText(values[i]));
+            }
+        }
+        return new NonFiniteComponent("state", "NaN");
+    }
+
+    private static String finiteValueText(double value) {
+        if (Double.isNaN(value)) return "NaN";
+        return value > 0.0 ? "Infinity" : "-Infinity";
+    }
+
+    private record NonFiniteComponent(String field, String value) {}
 }

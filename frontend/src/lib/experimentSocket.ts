@@ -10,12 +10,13 @@
  *   { event: SimulationEvent }，1.0 近遇在适配层转换为缺少 eventId/中点的兼容事件。
  * - 未识别的新消息类型记录一次开发日志并安全忽略，不能断开连接。
  */
-import type { Metrics, SimulationEvent, SimulationState, Vector3 } from '../contracts'
+import type { Metrics, SimulationEvent, SimulationHealthReport, SimulationState, Vector3 } from '../contracts'
 
 export type WsEventType =
   | 'SNAPSHOT'
   | 'TRAJECTORY'
   | 'METRICS'
+  | 'HEALTH'
   | 'STATUS'
   | 'NEAR_ENCOUNTER'
   | 'DIAGNOSTIC'
@@ -101,6 +102,7 @@ export interface ExperimentSocketHandlers {
   onSnapshot?: (payload: SnapshotPayload, envelope: WsEnvelope<SnapshotPayload>) => void
   onTrajectory?: (payload: TrajectoryPayload, envelope: WsEnvelope<TrajectoryPayload>) => void
   onMetrics?: (payload: MetricsPayload, envelope: WsEnvelope<MetricsPayload>) => void
+  onHealth?: (payload: SimulationHealthReport, envelope: WsEnvelope<SimulationHealthReport>) => void
   onStatus?: (payload: StatusPayload, envelope: WsEnvelope<StatusPayload>) => void
   /** 近遇事件（1.0/1.1 均归一化为 SimulationEvent）。 */
   onNearEncounter?: (event: SimulationEvent, envelope: WsEnvelope) => void
@@ -322,6 +324,12 @@ export class ExperimentSocket {
         return
       case 'METRICS':
         this.handlers.onMetrics?.(envelope.payload as MetricsPayload, envelope as WsEnvelope<MetricsPayload>)
+        return
+      case 'HEALTH':
+        this.handlers.onHealth?.(
+          envelope.payload as SimulationHealthReport,
+          envelope as WsEnvelope<SimulationHealthReport>,
+        )
         return
       case 'STATUS':
         this.handlers.onStatus?.(envelope.payload as StatusPayload, envelope as WsEnvelope<StatusPayload>)

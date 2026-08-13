@@ -25,7 +25,7 @@ public record ExperimentMessage(
         // 兼容旧构造签名：mergeKey 为空时按 SNAPSHOT/TRAJECTORY/METRICS 的既有最新值语义
         mergeKey = mergeKey != null ? mergeKey
                 : switch (type) {
-                    case SNAPSHOT, TRAJECTORY, METRICS -> type.name();
+                    case SNAPSHOT, TRAJECTORY, METRICS, HEALTH -> type.name();
                     default -> null;
                 };
     }

@@ -146,12 +146,15 @@ class NBodyIntegratorTest {
                 10L,
                 null);
         SimulationState state = NBodyIntegrator.initialState(config);
-        assertThrows(NumericalInstabilityException.class, () -> {
+        NumericalInstabilityException failure = assertThrows(NumericalInstabilityException.class, () -> {
             SimulationState current = state;
             for (int i = 0; i < 50; i++) {
                 current = NBodyIntegrator.step(config, current).state();
             }
         });
+        assertTrue(failure.getStep() >= 0);
+        assertTrue(Double.isFinite(failure.getSimulationTimeSeconds()));
+        assertTrue(failure.getField() != null && !failure.getField().isBlank());
     }
 
     @Test

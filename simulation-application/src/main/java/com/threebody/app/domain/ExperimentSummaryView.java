@@ -18,12 +18,16 @@ public record ExperimentSummaryView(
         Progress progress,
         EndReason endReason,
         long storageBytes,
-        String errorCode) {
+        String errorCode,
+        SimulationHealthStatus healthStatus,
+        ExperimentLineage lineage) {
 
     public static ExperimentSummaryView from(Experiment e, int queuePosition, long storageBytes) {
         return new ExperimentSummaryView(
                 e.id(), e.name(), e.status(), queuePosition,
                 e.createdAt(), e.updatedAt(), e.startedAt(), e.completedAt(),
-                e.config().bodyCount(), e.progress(), e.endReason(), storageBytes, e.errorMessage());
+                e.config().bodyCount(), e.progress(), e.endReason(), storageBytes, e.errorMessage(),
+                e.healthReport() != null ? e.healthReport().status() : null,
+                e.lineage());
     }
 }

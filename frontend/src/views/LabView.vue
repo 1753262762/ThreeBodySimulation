@@ -10,6 +10,7 @@ import ThemeSelector from '../components/ThemeSelector.vue'
 import PlaybackTimeline from '../components/PlaybackTimeline.vue'
 import EventPanel from '../components/EventPanel.vue'
 import WarningModal from '../components/WarningModal.vue'
+import ComparisonExperimentDialog from '../components/ComparisonExperimentDialog.vue'
 import { useDraftStore } from '../stores/draft'
 import { useExperimentsStore, type MetricSample } from '../stores/experiments'
 import { usePreferencesStore, type CameraMode, type ProjectionPlane } from '../stores/preferences'
@@ -19,11 +20,18 @@ import { fromSi, unitLabel } from '../lib/units'
 import type { HoverBodyInfo } from '../lib/canvasHover'
 import type { SceneCameraPreset } from '../lib/scene3d'
 import {
+  planComparisonExperiment,
+  resolveStepLimit,
+  type ComparisonExperimentPlan,
+  type StepLimitResolution,
+} from '../lib/comparisonExperiment'
+import {
   LIVE_TRAIL_LIMIT,
   isTerminalStatus,
   type SimulationEvent,
   type SimulationState,
   type ValidationIssue,
+  type GuidanceAction,
 } from '../contracts'
 
 const draftStore = useDraftStore()
@@ -50,8 +58,48 @@ const displayState = computed(() => experimentsStore.displayState)
 const metrics = computed(() => experimentsStore.liveMetrics)
 const metricSamples = computed<MetricSample[]>(() => experimentsStore.metricSamples)
 
-const step = computed(() => experimentsStore.liveState?.step ?? experimentsStore.current?.progress.step ?? 0)
-const simTime = computed(() => experimentsStore.liveState?.simulationTimeSeconds ?? experimentsStore.current?.progress.simulationTimeSeconds ?? 0)
+const healthCloneNotice = ref<string | null>(null)
+const comparisonDialogOpen = ref(false)
+const comparisonPlan = ref<ComparisonExperimentPlan | null>(null)
+const comparisonRationale = ref<string | null>(null)
+const comparisonTradeoff = ref<string | null>(null)
+const comparisonDialogMode = ref<'comparison' | 'guidance'>('comparison')
+
+function prepareHealthRetry(suggestedTimeStepSeconds: number): void {
+  const source = activeExperiment.value
+  if (!source) return
+  comparisonPlan.value = planComparisonExperiment(source.config, suggestedTimeStepSeconds)
+  comparisonDialogMode.value = 'comparison'
+  const recommendation = source.healthReport?.recommendations.find((item) => item.code === 'REDUCE_TIME_STEP')
+  comparisonRationale.value = recommendation?.rationale ?? null
+  comparisonTradeoff.value = recommendation?.tradeoff ?? null
+  comparisonDialogOpen.value = true
+}
+
+function confirmComparisonPlan(resolution: StepLimitResolution | null): void {
+  if (comparisonDialogMode.value === 'guidance') {
+    if (resolution) draftStore.resolveGuidanceStepLimit(resolution)
+    comparisonDialogOpen.value = false
+    activeTab.value = 'parameters'
+    return
+  }
+  const source = activeExperiment.value
+  const rawPlan = comparisonPlan.value
+  if (!source || !rawPlan) return
+  const plan = resolution ? resolveStepLimit(rawPlan, resolution) : rawPlan
+  const proposed = {
+    ...plan.proposedConfig,
+    name: `${source.name} 对照实验`,
+  }
+  draftStore.loadComparisonConfig(proposed, {
+    sourceExperimentId: source.id,
+    recommendationCode: 'REDUCE_TIME_STEP',
+    strategy: resolution === 'SHORTEN_DURATION' ? 'PRESERVE_STEP_COUNT' : 'PRESERVE_SIMULATION_DURATION',
+  }, source.name, source.config)
+  comparisonDialogOpen.value = false
+  activeTab.value = 'parameters'
+  healthCloneNotice.value = `已载入对照实验参数：dt ${plan.originalTimeStepSeconds} s → ${plan.proposedTimeStepSeconds} s。源运行记录保持不变。`
+}
 
 const bodyNames = computed(() => {
   const map = new Map<string, string>()
@@ -202,9 +250,14 @@ async function createWithNormalizedConfig(): Promise<void> {
   if (!config) return
   draftStore.beginCreate()
   try {
-    const created = await experimentsStore.createExperiment(config, draftStore.draft.name || undefined)
+    const created = await experimentsStore.createExperiment(
+      config,
+      draftStore.draft.name || undefined,
+      draftStore.pendingRetryContext,
+    )
     if (created) {
       draftStore.markApplied(config)
+      draftStore.clearRetryContext()
       draftStore.confirmWarnings()
       await experimentsStore.loadExperiment(created.id)
       experimentsStore.connect(created.id)
@@ -376,6 +429,20 @@ const canvasRef = ref<InstanceType<typeof SimulationCanvas> | null>(null)
 const scene3dRef = ref<Scene3DExposed | null>(null)
 function fitCanvas(): void {
   canvasRef.value?.fitToContent()
+}
+
+function onWarningApply(action: GuidanceAction): void {
+  if (draftStore.applyGuidanceAction(action)) {
+    warningOpen.value = false
+    draftStore.dismissWarnings()
+  } else if (draftStore.pendingGuidancePlan) {
+    warningOpen.value = false
+    comparisonDialogMode.value = 'guidance'
+    comparisonPlan.value = draftStore.pendingGuidancePlan
+    comparisonRationale.value = action.rationale
+    comparisonTradeoff.value = action.tradeoff
+    comparisonDialogOpen.value = true
+  }
 }
 
 function setViewMode(mode: ViewMode): void {
@@ -603,10 +670,17 @@ onUnmounted(() => {
         <KpiCards
           v-show="!sceneExpanded"
           :metrics="metrics"
-          :config="activeExperiment?.config ?? null"
-          :step="step"
-          :simulation-time-seconds="simTime"
+          :health="experimentsStore.liveHealthReport"
+          :reviewing="experimentsStore.isReviewing"
+          @clone-retry="prepareHealthRetry"
         />
+        <div v-if="healthCloneNotice" v-show="!sceneExpanded" class="health-clone-notice">
+          {{ healthCloneNotice }}
+          <button type="button" @click="healthCloneNotice = null">关闭</button>
+        </div>
+        <div v-if="draftStore.retryAttributionLimited" v-show="!sceneExpanded" class="health-clone-notice is-warning">
+          你还修改了软化长度、初始条件或其他物理参数，因此结果差异不能只归因于时间步长变化。
+        </div>
 
         <div v-show="!sceneExpanded" class="chart-grid">
           <MetricChart title="系统能量" subtitle="总能量 (J) vs 步数" :series="energySeries" :paused="sceneExpanded" />
@@ -624,7 +698,6 @@ onUnmounted(() => {
                   <button v-if="experimentsStore.can('PAUSE')" @click="experimentsStore.submitAction('PAUSE')">暂停</button>
                   <button v-if="experimentsStore.can('RESUME')" @click="experimentsStore.submitAction('RESUME')">继续</button>
                   <button v-if="experimentsStore.can('STEP')" @click="experimentsStore.submitAction('STEP')">单步</button>
-                  <button v-if="experimentsStore.can('RESTART')" @click="experimentsStore.submitAction('RESTART')">重启</button>
                   <button v-if="experimentsStore.can('CANCEL')" class="danger" @click="experimentsStore.submitAction('CANCEL')">取消</button>
                 </div>
                 <button class="apply-button" @click="router.push('/reports/' + activeExperiment.id)">查看报告</button>
@@ -641,6 +714,16 @@ onUnmounted(() => {
       :warnings="pendingWarnings"
       @confirm="onWarningConfirm"
       @cancel="onWarningCancel"
+      @apply="onWarningApply"
+    />
+    <ComparisonExperimentDialog
+      :open="comparisonDialogOpen"
+      :plan="comparisonPlan"
+      :rationale="comparisonRationale"
+      :tradeoff="comparisonTradeoff"
+      :context="comparisonDialogMode"
+      @confirm="confirmComparisonPlan"
+      @cancel="comparisonDialogOpen = false"
     />
   </main>
 </template>

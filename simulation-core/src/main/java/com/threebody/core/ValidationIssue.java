@@ -14,19 +14,30 @@ public record ValidationIssue(
         ValidationCode code,
         String message,
         ValidationSeverity severity,
-        RiskLevel riskLevel) {
+        RiskLevel riskLevel,
+        ValidationGuidance guidance) {
+
+    public ValidationIssue(String field, ValidationCode code, String message,
+            ValidationSeverity severity, RiskLevel riskLevel) {
+        this(field, code, message, severity, riskLevel, null);
+    }
 
     public static ValidationIssue error(String field, ValidationCode code, String message) {
-        return new ValidationIssue(field, code, message, ValidationSeverity.ERROR, null);
+        return new ValidationIssue(field, code, message, ValidationSeverity.ERROR, null, null);
     }
 
     public static ValidationIssue warning(String field, ValidationCode code, String message) {
-        return new ValidationIssue(field, code, message, ValidationSeverity.WARNING, null);
+        return new ValidationIssue(field, code, message, ValidationSeverity.WARNING, null, null);
     }
 
     /** WARNING 风险问题；调用方必须给出明确风险级别。 */
     public static ValidationIssue risk(String field, ValidationCode code, String message,
             RiskLevel riskLevel) {
-        return new ValidationIssue(field, code, message, ValidationSeverity.WARNING, riskLevel);
+        return new ValidationIssue(field, code, message, ValidationSeverity.WARNING, riskLevel, null);
+    }
+
+    public static ValidationIssue risk(String field, ValidationCode code, String message,
+            RiskLevel riskLevel, ValidationGuidance guidance) {
+        return new ValidationIssue(field, code, message, ValidationSeverity.WARNING, riskLevel, guidance);
     }
 }

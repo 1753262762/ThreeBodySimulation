@@ -12,7 +12,13 @@ import java.util.List;
 public record ValidationResult(
         List<ValidationIssue> issues,
         SimulationConfig normalizedConfig,
-        Long estimatedSteps) {
+        Long estimatedSteps,
+        ConfigSummary configSummary) {
+
+    public ValidationResult(List<ValidationIssue> issues, SimulationConfig normalizedConfig,
+            Long estimatedSteps) {
+        this(issues, normalizedConfig, estimatedSteps, null);
+    }
 
     public ValidationResult {
         issues = issues == null ? List.of() : List.copyOf(issues);

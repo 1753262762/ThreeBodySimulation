@@ -6,6 +6,7 @@ import { formatScientific, formatSimulationTime } from '../lib/format'
 import { fromSi, unitLabel } from '../lib/units'
 import { useExperimentsStore } from '../stores/experiments'
 import { usePreferencesStore } from '../stores/preferences'
+import PhenomenonOverview from './PhenomenonOverview.vue'
 
 const props = defineProps<{
   events: SimulationEvent[]
@@ -30,7 +31,7 @@ const SEVERITY_LABELS: Record<string, string> = {
   CRITICAL: '严重',
 }
 const CAUSE_LABELS: Record<string, string> = {
-  PHYSICAL_PHENOMENON: '物理现象',
+  PHYSICAL_PHENOMENON: '运动特征（可能与物理过程相关）',
   PARAMETER_RISK: '参数风险',
   NUMERICAL_ERROR: '数值误差',
   MIXED: '混合',
@@ -115,8 +116,10 @@ function evidenceRows(event: SimulationEvent): EvidenceRow[] {
     if (!label) continue
     if (value === null || value === undefined) continue
     const text =
-      key === 'timeStepSeconds' || key === 'softeningLengthMeters'
-        ? distanceText(value as number)
+      key === 'timeStepSeconds'
+        ? timeText(value as number)
+        : key === 'softeningLengthMeters'
+          ? distanceText(value as number)
         : key === 'lastStableStep'
           ? String(Math.round(value as number))
           : formatScientific(value as number)
@@ -132,8 +135,9 @@ function evidenceRows(event: SimulationEvent): EvidenceRow[] {
       <b>事件与诊断</b>
       <span>{{ visibleEvents.length }} 条</span>
     </header>
-    <div v-if="visibleEvents.length === 0" class="event-empty">暂无事件</div>
-    <div v-else class="event-list">
+    <div class="event-content">
+      <PhenomenonOverview :events="events" :health="experimentsStore.liveHealthReport" />
+      <div v-if="visibleEvents.length > 0" class="event-list">
       <article
         v-for="event in visibleEvents"
         :key="event.eventId ?? 'seq-' + event.sequence"
@@ -159,7 +163,7 @@ function evidenceRows(event: SimulationEvent): EvidenceRow[] {
         <dl class="event-facts">
           <template v-if="event.diagnostic">
             <div class="event-fact">
-              <dt>原因类别</dt>
+              <dt>技术分类</dt>
               <dd>{{ CAUSE_LABELS[event.diagnostic.causeCategory] ?? event.diagnostic.causeCategory }}</dd>
             </div>
             <div class="event-fact">
@@ -185,7 +189,7 @@ function evidenceRows(event: SimulationEvent): EvidenceRow[] {
             </dl>
           </div>
           <div v-if="event.diagnostic.likelyCauses.length > 0" class="event-cause-list">
-            <span class="event-subtitle">可能原因</span>
+            <span class="event-subtitle">可能相关（待验证）</span>
             <ul>
               <li v-for="(cause, i) in event.diagnostic.likelyCauses" :key="i">{{ cause }}</li>
             </ul>
@@ -201,6 +205,7 @@ function evidenceRows(event: SimulationEvent): EvidenceRow[] {
           <button type="button" class="event-locate" @click="emit('select', event)">定位到此处</button>
         </footer>
       </article>
+      </div>
     </div>
   </div>
 </template>

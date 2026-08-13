@@ -2,24 +2,38 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api } from '../lib/apiClient'
-import type { ReportData } from '../contracts'
+import type { Experiment, ReportData } from '../contracts'
 import { formatBytes, formatDateTime, formatInteger, formatScientific, formatSimulationTime, formatWallClock } from '../lib/format'
 import { EXPERIMENT_STATUS_LABELS, END_REASON_LABELS } from '../contracts'
 import ThemeSelector from '../components/ThemeSelector.vue'
+import SimulationHealthCard from '../components/SimulationHealthCard.vue'
+import PhenomenonOverview from '../components/PhenomenonOverview.vue'
 
 const route = useRoute()
 const router = useRouter()
 const report = ref<ReportData | null>(null)
 const loading = ref(true)
 const error = ref('')
+const sourceExperiment = ref<Experiment | null>(null)
+const sourceUnavailable = ref(false)
 
 const experimentId = () => String(route.params.id)
 
 async function load(): Promise<void> {
   loading.value = true
   error.value = ''
+  sourceExperiment.value = null
+  sourceUnavailable.value = false
   try {
     report.value = await api.getReportData(experimentId())
+    const sourceId = report.value.experiment.lineage?.sourceExperimentId
+    if (sourceId) {
+      try {
+        sourceExperiment.value = await api.getExperiment(sourceId)
+      } catch {
+        sourceUnavailable.value = true
+      }
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : '加载报告失败。'
   } finally {
@@ -118,6 +132,32 @@ onMounted(() => {
           <article><span>积分速率</span><b>{{ summary?.stepsPerSecond ? summary.stepsPerSecond.toFixed(1) + ' step/s' : '—' }}</b></article>
           <article><span>墙钟耗时</span><b>{{ formatWallClock(summary?.elapsedWallClockSeconds) }}</b></article>
         </div>
+      </section>
+
+      <section class="report-section">
+        <h2>数值结果可信度</h2>
+        <div class="lab-kpis report-health">
+          <SimulationHealthCard :health="exp?.healthReport ?? null" hide-clone default-expanded />
+        </div>
+      </section>
+
+      <section v-if="exp?.lineage" class="report-section">
+        <h2>对照实验来源</h2>
+        <div class="lineage-summary">
+          <p>这是第 <b>{{ exp.lineage.retryDepth }}</b> 次对照实验，来源为
+            <RouterLink v-if="!sourceUnavailable" :to="'/experiments/' + exp.lineage.sourceExperimentId">{{ exp.lineage.sourceExperimentName }}</RouterLink>
+            <span v-else>{{ exp.lineage.sourceExperimentName }}（源运行记录已删除）</span>。
+          </p>
+          <p>时间步长：{{ formatScientific(exp.lineage.beforeTimeStepSeconds ?? 0) }} s → {{ formatScientific(exp.lineage.afterTimeStepSeconds ?? 0) }} s；
+            预计步数：{{ formatInteger(exp.lineage.beforeEstimatedSteps) }} → {{ formatInteger(exp.lineage.afterEstimatedSteps) }}。</p>
+          <p>关键变化：{{ exp.lineage.changedFields.join('、') || '无' }}。</p>
+          <p>数值健康：源记录 {{ sourceExperiment?.healthStatus ?? exp.lineage.sourceHealthStatus ?? '尚无结果' }} → 当前 {{ exp.healthStatus ?? '尚无结果' }}。</p>
+        </div>
+      </section>
+
+      <section class="report-section">
+        <h2>物理现象解释</h2>
+        <PhenomenonOverview :events="events" :health="exp?.healthReport ?? null" />
       </section>
 
       <section class="report-section">

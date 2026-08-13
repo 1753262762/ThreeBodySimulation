@@ -17,6 +17,7 @@ import {
   type MockRecord,
 } from './mockRepository'
 import { closestPair } from './mockEngine'
+import { observeMockEncounter } from './mockHealth'
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -77,8 +78,17 @@ function publishTrajectory(record: MockRecord): void {
 
 function publishMetrics(record: MockRecord): void {
   if (!record.metrics) return
-  const message = envelope(record, 'METRICS', record.metrics)
+  const message = envelope(record, 'METRICS', {
+    ...record.metrics,
+    step: record.state.step,
+    simulationTimeSeconds: record.state.simulationTimeSeconds,
+  })
   clients.get(record.id)?.send(message)
+}
+
+function publishHealth(record: MockRecord): void {
+  if (!record.healthReport) return
+  clients.get(record.id)?.send(envelope(record, 'HEALTH', record.healthReport))
 }
 
 function publishStatus(record: MockRecord, message: string, endReason: MockRecord['endReason']): void {
@@ -173,7 +183,9 @@ function sendEncounter(
     closestSimulationTimeSeconds: isFinal ? encounter.closestSimulationTimeSeconds : simTime,
     midpointPosition: midpoint,
   })
+  record.healthReport = observeMockEncounter(record.healthReport, event)
   clients.get(record.id)?.send(envelope(record, 'NEAR_ENCOUNTER', { event }))
+  publishHealth(record)
 }
 
 function processEncounters(record: MockRecord): void {
@@ -222,69 +234,6 @@ function processEncounters(record: MockRecord): void {
   }
 }
 
-// ---- 运行时诊断 ----
-
-interface DiagnosticState {
-  driftWarned: boolean
-  driftCriticalWarned: boolean
-}
-
-const diagnosticState = new Map<string, DiagnosticState>()
-
-function processDiagnostics(record: MockRecord): void {
-  if (!record.metrics) return
-  const drift = record.metrics.relativeEnergyDrift
-  if (!Number.isFinite(drift)) return
-  const state = diagnosticState.get(record.id) ?? { driftWarned: false, driftCriticalWarned: false }
-  diagnosticState.set(record.id, state)
-  const diagnostic = (() => {
-    if (!state.driftCriticalWarned && Math.abs(drift) > 0.1) {
-      state.driftCriticalWarned = true
-      state.driftWarned = true
-      return {
-        code: 'ENERGY_DRIFT' as const,
-        severity: 'CRITICAL' as const,
-        causeCategory: 'NUMERICAL_ERROR' as const,
-        summary: '系统能量漂移超过 10%，长期积分结果不可信。',
-        likelyCauses: ['时间步长过大', '软化长度过小导致近接处数值误差'],
-        evidence: {
-          relativeEnergyDrift: drift,
-          timeStepSeconds: record.config.timeStepSeconds,
-          softeningLengthMeters: record.config.softeningLengthMeters,
-          lastStableStep: record.state.step,
-        },
-        recommendations: ['减小时间步长', '增大软化长度后重新运行'],
-      }
-    }
-    if (!state.driftWarned && Math.abs(drift) > 0.01) {
-      state.driftWarned = true
-      return {
-        code: 'ENERGY_DRIFT' as const,
-        severity: 'WARNING' as const,
-        causeCategory: 'NUMERICAL_ERROR' as const,
-        summary: '系统能量漂移超过 1%，建议检查时间步长与软化长度。',
-        likelyCauses: ['时间步长相对轨道周期偏大'],
-        evidence: {
-          relativeEnergyDrift: drift,
-          timeStepSeconds: record.config.timeStepSeconds,
-          softeningLengthMeters: record.config.softeningLengthMeters,
-          lastStableStep: record.state.step,
-        },
-        recommendations: ['减小时间步长以降低漂移', '如为展示用途可继续观察'],
-      }
-    }
-    return null
-  })()
-  if (!diagnostic) return
-  const event = emitEvent(record, 'DIAGNOSTIC', diagnostic.summary, {
-    eventId: 'bbbbbbbb-0000-4000-8000-' + (diagnostic.severity === 'CRITICAL' ? '00000001' : '00000002'),
-    phase: 'FINAL',
-    bodyIds: null,
-    diagnostic,
-  })
-  clients.get(record.id)?.send(envelope(record, 'DIAGNOSTIC', { event }))
-}
-
 /** 每 tick 推进一次运行中的实验，并广播三类增量消息。 */
 export function promoteQueuedHead(): void {
   const hasRunning = allRecords().some((record) => record.status === 'RUNNING')
@@ -306,8 +255,8 @@ export function advanceMockOneTick(): void {
     publishSnapshot(record)
     publishTrajectory(record)
     publishMetrics(record)
+    publishHealth(record)
     processEncounters(record)
-    processDiagnostics(record)
     if (outcome.finished === 'MAX_STEPS') {
       publishStatus(record, '达到最大步数，实验完成。', 'MAX_STEPS')
     } else if (outcome.finished === 'TARGET_TIME') {
@@ -370,5 +319,4 @@ export function getDebugClosestPair(id: string) {
 /** 测试辅助：清空生命周期状态。 */
 export function resetSchedulerState(): void {
   activeEncounters.clear()
-  diagnosticState.clear()
 }

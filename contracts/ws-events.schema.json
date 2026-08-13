@@ -10,7 +10,7 @@
     "schemaVersion": { "const": "1.1" },
     "type": {
       "type": "string",
-      "enum": ["SNAPSHOT", "TRAJECTORY", "METRICS", "STATUS", "NEAR_ENCOUNTER", "DIAGNOSTIC", "ERROR"]
+      "enum": ["SNAPSHOT", "TRAJECTORY", "METRICS", "HEALTH", "STATUS", "NEAR_ENCOUNTER", "DIAGNOSTIC", "ERROR"]
     },
     "experimentId": { "type": "string", "format": "uuid" },
     "sequence": { "type": "integer", "minimum": 1 },
@@ -21,6 +21,7 @@
     { "if": { "properties": { "type": { "const": "SNAPSHOT" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/snapshotPayload" } } } },
     { "if": { "properties": { "type": { "const": "TRAJECTORY" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/trajectoryPayload" } } } },
     { "if": { "properties": { "type": { "const": "METRICS" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/metricsPayload" } } } },
+    { "if": { "properties": { "type": { "const": "HEALTH" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/healthPayload" } } } },
     { "if": { "properties": { "type": { "const": "STATUS" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/statusPayload" } } } },
     { "if": { "properties": { "type": { "const": "NEAR_ENCOUNTER" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/eventPayload" } } } },
     { "if": { "properties": { "type": { "const": "DIAGNOSTIC" } } }, "then": { "properties": { "payload": { "$ref": "#/definitions/eventPayload" } } } },
@@ -205,6 +206,108 @@
         "allTimeMinimumPairDistanceStep": { "type": ["integer", "null"] },
         "stepsPerSecond": { "type": ["number", "null"] },
         "elapsedWallClockSeconds": { "type": ["number", "null"] }
+      }
+    },
+    "healthReason": {
+      "type": "object",
+      "required": ["code", "severity", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string" },
+        "severity": { "type": "string", "enum": ["INFO", "WARNING", "ERROR"] },
+        "metric": { "type": ["string", "null"] },
+        "message": { "type": "string" }
+      }
+    },
+    "healthRecommendation": {
+      "type": "object",
+      "required": ["code", "action", "message", "configPatch"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "enum": ["REDUCE_TIME_STEP"] },
+        "action": { "type": "string", "enum": ["CLONE_AND_RETRY"] },
+        "message": { "type": "string" },
+        "rationale": { "type": ["string", "null"] },
+        "tradeoff": { "type": ["string", "null"] },
+        "verification": { "type": ["string", "null"] },
+        "configPatch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "timeStepSeconds": { "type": ["number", "null"] } }
+        }
+      }
+    },
+    "healthCloseEncounter": {
+      "type": "object",
+      "required": ["eventId", "bodyIds", "distanceMeters", "step", "simulationTimeSeconds"],
+      "additionalProperties": false,
+      "properties": {
+        "eventId": { "type": "string" },
+        "bodyIds": { "type": "array", "items": { "type": "string" } },
+        "distanceMeters": { "type": "number" },
+        "step": { "type": "integer", "minimum": 0 },
+        "simulationTimeSeconds": { "type": "number" }
+      }
+    },
+    "healthFailure": {
+      "type": "object",
+      "required": ["code", "step", "simulationTimeSeconds", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "enum": ["NON_FINITE_STATE", "NON_FINITE_METRICS"] },
+        "bodyId": { "type": ["string", "null"] },
+        "field": { "type": ["string", "null"] },
+        "step": { "type": "integer", "minimum": 0 },
+        "simulationTimeSeconds": { "type": "number" },
+        "value": { "type": ["string", "null"] },
+        "message": { "type": "string" }
+      }
+    },
+    "healthMetrics": {
+      "type": "object",
+      "required": ["currentEnergyDrift", "peakEnergyDrift", "peakEnergyDriftStep", "peakEnergyDriftSimulationTimeSeconds", "energyTrend", "angularMomentumTrend", "closeEncounterCount"],
+      "additionalProperties": false,
+      "properties": {
+        "currentEnergyDrift": { "type": "number" },
+        "peakEnergyDrift": { "type": "number" },
+        "peakEnergyDriftStep": { "type": "integer", "minimum": 0 },
+        "peakEnergyDriftSimulationTimeSeconds": { "type": "number" },
+        "currentAngularMomentumDrift": { "type": ["number", "null"] },
+        "peakAngularMomentumDrift": { "type": ["number", "null"] },
+        "peakAngularMomentumDriftStep": { "type": ["integer", "null"] },
+        "peakAngularMomentumDriftSimulationTimeSeconds": { "type": ["number", "null"] },
+        "energyTrend": { "type": "string", "enum": ["STABLE", "SLOWLY_INCREASING", "RAPIDLY_INCREASING"] },
+        "angularMomentumTrend": { "type": "string", "enum": ["STABLE", "SLOWLY_INCREASING", "RAPIDLY_INCREASING"] },
+        "closestApproachMeters": { "type": ["number", "null"] },
+        "closeEncounterCount": { "type": "integer", "minimum": 0 },
+        "latestCloseEncounter": { "anyOf": [{ "$ref": "#/definitions/healthCloseEncounter" }, { "type": "null" }] }
+      }
+    },
+    "healthPayload": {
+      "type": "object",
+      "required": ["status", "metrics", "thresholds", "reasons", "recommendations", "analyzedStep", "analyzedSimulationTimeSeconds", "sampleStride", "sampleCount"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "enum": ["GOOD", "WARNING", "POOR", "FAILED"] },
+        "metrics": { "$ref": "#/definitions/healthMetrics" },
+        "thresholds": {
+          "type": "object",
+          "required": ["energyWarning", "energyPoor", "angularMomentumWarning", "angularMomentumPoor"],
+          "additionalProperties": false,
+          "properties": {
+            "energyWarning": { "type": "number" },
+            "energyPoor": { "type": "number" },
+            "angularMomentumWarning": { "type": "number" },
+            "angularMomentumPoor": { "type": "number" }
+          }
+        },
+        "reasons": { "type": "array", "items": { "$ref": "#/definitions/healthReason" } },
+        "recommendations": { "type": "array", "items": { "$ref": "#/definitions/healthRecommendation" } },
+        "failure": { "anyOf": [{ "$ref": "#/definitions/healthFailure" }, { "type": "null" }] },
+        "analyzedStep": { "type": "integer", "minimum": 0 },
+        "analyzedSimulationTimeSeconds": { "type": "number" },
+        "sampleStride": { "type": "integer", "minimum": 1 },
+        "sampleCount": { "type": "integer", "minimum": 0 }
       }
     },
     "statusPayload": {

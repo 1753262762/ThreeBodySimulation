@@ -10,7 +10,7 @@ export type ThreeBodyLabWebSocketEnvelope = {
   [k: string]: unknown
 } & {
   schemaVersion: '1.1'
-  type: 'SNAPSHOT' | 'TRAJECTORY' | 'METRICS' | 'STATUS' | 'NEAR_ENCOUNTER' | 'DIAGNOSTIC' | 'ERROR'
+  type: 'SNAPSHOT' | 'TRAJECTORY' | 'METRICS' | 'HEALTH' | 'STATUS' | 'NEAR_ENCOUNTER' | 'DIAGNOSTIC' | 'ERROR'
   experimentId: string
   sequence: number
   timestamp: string

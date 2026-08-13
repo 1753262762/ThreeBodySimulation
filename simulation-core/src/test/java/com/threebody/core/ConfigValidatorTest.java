@@ -103,6 +103,26 @@ class ConfigValidatorTest {
         assertNotNull(issue, "应产生 TIME_STEP_TOO_LARGE 风险");
         assertEquals(ValidationSeverity.WARNING, issue.severity());
         assertEquals(RiskLevel.HIGH, issue.riskLevel());
+        assertNotNull(issue.guidance());
+        assertEquals(GuidanceActionMode.APPLY_PATCH, issue.guidance().primaryAction().mode());
+        assertTrue(issue.guidance().primaryAction().configPatch().timeStepSeconds()
+                < config.timeStepSeconds());
+        assertEquals(GuidanceAdjustmentPolicy.PRESERVE_SIMULATION_DURATION,
+                issue.guidance().primaryAction().adjustmentPolicy());
+    }
+
+    @Test
+    @DisplayName("合法配置返回可解释的运行事实摘要")
+    void validConfigReturnsConfigSummary() {
+        ValidationResult result = ConfigValidator.validate(validConfig());
+        ConfigSummary summary = result.configSummary();
+        assertNotNull(summary);
+        assertEquals(10_000L, summary.estimatedSteps());
+        assertEquals(36_000_000.0, summary.estimatedSimulationTimeSeconds());
+        assertEquals(LimitingEndCondition.MAX_STEPS, summary.limitingEndCondition());
+        assertEquals(List.of("a", "b"), summary.initialMinimumPairBodyIds());
+        assertEquals(2.0e11, summary.initialMinimumPairDistanceMeters());
+        assertEquals(5.0e-5, summary.softeningToInitialDistanceRatio());
     }
 
     @Test

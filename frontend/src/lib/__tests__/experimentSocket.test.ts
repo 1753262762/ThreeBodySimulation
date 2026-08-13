@@ -277,3 +277,21 @@ describe('ExperimentSocket 1.0/1.1 事件兼容（F4）', () => {
     socket.close()
   })
 })
+
+describe('ExperimentSocket HEALTH', () => {
+  it('dispatches HEALTH as an independent report', () => {
+    FakeSocket.instances = []
+    const received: unknown[] = []
+    const socket = new ExperimentSocket(
+      'exp-1',
+      { onHealth: (health) => received.push(health) },
+      { socketFactory: (url) => new FakeSocket(url) as unknown as WebSocket },
+    )
+    socket.connect()
+    const fake = FakeSocket.instances[0]
+    fake.emitOpen()
+    fake.emitMessage(envelope(3, 'HEALTH', { status: 'WARNING' }))
+    expect(received).toEqual([{ status: 'WARNING' }])
+    socket.close()
+  })
+})

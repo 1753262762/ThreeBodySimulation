@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import type { ValidationIssue } from '../contracts'
+import type { GuidanceAction, ValidationIssue } from '../contracts'
+import ValidationGuidanceCard from './ValidationGuidanceCard.vue'
 
 const props = defineProps<{
   open: boolean
@@ -10,6 +11,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'confirm'): void
   (e: 'cancel'): void
+  (e: 'apply', action: GuidanceAction): void
 }>()
 
 const dialogRef = ref<HTMLElement | null>(null)
@@ -88,9 +90,7 @@ watch(
         @keydown="onKeydown"
       >
         <h2 id="warning-modal-title">存在运行风险</h2>
-        <p id="warning-modal-desc" class="modal-hint">
-          以下参数存在潜在数值或物理风险，仍要按当前配置启动实验吗？
-        </p>
+        <p id="warning-modal-desc" class="modal-hint">先查看证据、收益和代价。你可以应用建议后再运行，也可以保留原配置研究不稳定或非束缚系统。</p>
         <ul class="warning-list">
           <li
             v-for="(warning, index) in warnings"
@@ -98,16 +98,23 @@ watch(
             class="warning-item"
             :class="`risk-${(warning.riskLevel ?? 'CAUTION').toLowerCase()}`"
           >
-            <span class="risk-badge">{{ RISK_LABELS[warning.riskLevel ?? 'CAUTION'] }}</span>
-            <code class="warning-field">{{ warning.field }}</code>
-            <span class="warning-message">{{ warning.message }}</span>
+            <ValidationGuidanceCard
+              v-if="warning.guidance"
+              :issue="warning"
+              @apply="emit('apply', $event)"
+            />
+            <template v-else>
+              <span class="risk-badge">{{ RISK_LABELS[warning.riskLevel ?? 'CAUTION'] }}</span>
+              <code class="warning-field">{{ warning.field }}</code>
+              <span class="warning-message">{{ warning.message }}</span>
+            </template>
           </li>
         </ul>
         <div class="modal-actions">
           <button type="button" class="secondary" data-autofocus @click="emit('cancel')">
             返回修改
           </button>
-          <button type="button" class="danger" @click="emit('confirm')">仍然运行</button>
+          <button type="button" class="danger" @click="emit('confirm')">理解风险，仍按原配置运行</button>
         </div>
       </div>
     </div>

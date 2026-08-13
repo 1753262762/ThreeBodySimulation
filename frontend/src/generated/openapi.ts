@@ -326,6 +326,55 @@ export interface components {
              * @enum {string|null}
              */
             riskLevel?: "CAUTION" | "HIGH" | null;
+            /** @description 风险的结构化解释；ERROR 或无建议时为 null */
+            guidance?: components["schemas"]["ValidationGuidance"] | null;
+        };
+        GuidanceEvidence: {
+            code: string;
+            /** Format: double */
+            value: number;
+            /** Format: double */
+            referenceValue?: number | null;
+            /** Format: double */
+            ratio?: number | null;
+            bodyIds: string[];
+        };
+        GuidanceConfigPatch: {
+            /** Format: double */
+            timeStepSeconds?: number | null;
+            /** Format: int64 */
+            maxSteps?: number | null;
+        };
+        GuidanceAction: {
+            code: string;
+            /** @enum {string} */
+            mode: "APPLY_PATCH" | "MANUAL_REVIEW";
+            label: string;
+            rationale: string;
+            tradeoff: string;
+            configPatch?: components["schemas"]["GuidanceConfigPatch"] | null;
+            /** @enum {string|null} */
+            adjustmentPolicy?: "PRESERVE_SIMULATION_DURATION" | null;
+        };
+        ValidationGuidance: {
+            observation: string;
+            impact: string;
+            evidence: components["schemas"]["GuidanceEvidence"][];
+            primaryAction: components["schemas"]["GuidanceAction"];
+            alternatives: components["schemas"]["GuidanceAction"][];
+        };
+        ConfigSummary: {
+            /** Format: int64 */
+            estimatedSteps?: number | null;
+            /** Format: double */
+            estimatedSimulationTimeSeconds?: number | null;
+            /** @enum {string|null} */
+            limitingEndCondition?: "MAX_STEPS" | "TARGET_TIME" | "BOTH" | null;
+            /** Format: double */
+            initialMinimumPairDistanceMeters?: number | null;
+            initialMinimumPairBodyIds: string[];
+            /** Format: double */
+            softeningToInitialDistanceRatio?: number | null;
         };
         ValidationResult: {
             /** @description 不存在 ERROR 级问题时为 true */
@@ -335,6 +384,7 @@ export interface components {
             normalizedConfig?: components["schemas"]["SimulationConfig"] | null;
             /** Format: int64 */
             estimatedSteps?: number | null;
+            configSummary?: components["schemas"]["ConfigSummary"] | null;
         };
         /** @enum {string} */
         ExperimentStatus: "QUEUED" | "RUNNING" | "PAUSED" | "COMPLETED" | "CANCELLED" | "FAILED";
@@ -343,6 +393,48 @@ export interface components {
         ExperimentCreateRequest: {
             name?: string;
             config: components["schemas"]["SimulationConfig"];
+            retryContext?: components["schemas"]["ExperimentRetryContext"] | null;
+        };
+        ExperimentRetryContext: {
+            /** Format: uuid */
+            sourceExperimentId: string;
+            recommendationCode: string;
+            /** @enum {string} */
+            strategy: "PRESERVE_SIMULATION_DURATION" | "PRESERVE_STEP_COUNT";
+        };
+        ExperimentLineage: {
+            /** Format: uuid */
+            sourceExperimentId: string;
+            sourceExperimentName: string;
+            /** Format: uuid */
+            rootExperimentId: string;
+            /** Format: int32 */
+            retryDepth: number;
+            recommendationCode: string;
+            /** @enum {string} */
+            strategy: "PRESERVE_SIMULATION_DURATION" | "PRESERVE_STEP_COUNT";
+            /** Format: double */
+            beforeTimeStepSeconds?: number | null;
+            /** Format: double */
+            afterTimeStepSeconds?: number | null;
+            /** Format: int64 */
+            beforeMaxSteps?: number | null;
+            /** Format: int64 */
+            afterMaxSteps?: number | null;
+            /** Format: double */
+            beforeTargetSimulationTimeSeconds?: number | null;
+            /** Format: double */
+            afterTargetSimulationTimeSeconds?: number | null;
+            /** Format: double */
+            beforeEstimatedSimulationTimeSeconds?: number | null;
+            /** Format: double */
+            afterEstimatedSimulationTimeSeconds?: number | null;
+            /** Format: int64 */
+            beforeEstimatedSteps?: number | null;
+            /** Format: int64 */
+            afterEstimatedSteps?: number | null;
+            changedFields: string[];
+            sourceHealthStatus?: components["schemas"]["SimulationHealthStatus"] | null;
         };
         Progress: {
             /** Format: int64 */
@@ -515,6 +607,119 @@ export interface components {
              */
             liveWindowSize: number;
         };
+        /** @enum {string} */
+        SimulationHealthStatus: "GOOD" | "WARNING" | "POOR" | "FAILED";
+        /** @enum {string} */
+        DriftTrend: "STABLE" | "SLOWLY_INCREASING" | "RAPIDLY_INCREASING";
+        /** @enum {string} */
+        HealthReasonSeverity: "INFO" | "WARNING" | "ERROR";
+        HealthThresholds: {
+            /**
+             * Format: double
+             * @example 0.001
+             */
+            energyWarning: number;
+            /**
+             * Format: double
+             * @example 0.01
+             */
+            energyPoor: number;
+            /**
+             * Format: double
+             * @example 0.001
+             */
+            angularMomentumWarning: number;
+            /**
+             * Format: double
+             * @example 0.01
+             */
+            angularMomentumPoor: number;
+        };
+        HealthReason: {
+            /** @enum {string} */
+            code: "CONSERVATION_WITHIN_TOLERANCE" | "ENERGY_DRIFT_ELEVATED" | "ENERGY_DRIFT_HIGH" | "ANGULAR_MOMENTUM_DRIFT_ELEVATED" | "ANGULAR_MOMENTUM_DRIFT_HIGH" | "CLOSE_ENCOUNTER_NEAR_DRIFT" | "SOFTENING_SCALE_APPROACHED" | "NON_FINITE_STATE" | "NON_FINITE_METRICS";
+            severity: components["schemas"]["HealthReasonSeverity"];
+            metric?: string | null;
+            message: string;
+        };
+        HealthConfigPatch: {
+            /** Format: double */
+            timeStepSeconds?: number | null;
+        };
+        HealthRecommendation: {
+            /** @enum {string} */
+            code: "REDUCE_TIME_STEP";
+            /** @enum {string} */
+            action: "CLONE_AND_RETRY";
+            message: string;
+            configPatch: components["schemas"]["HealthConfigPatch"];
+            rationale?: string | null;
+            tradeoff?: string | null;
+            verification?: string | null;
+        };
+        HealthCloseEncounter: {
+            eventId: string;
+            bodyIds: string[];
+            /** Format: double */
+            distanceMeters: number;
+            /** Format: int64 */
+            step: number;
+            /** Format: double */
+            simulationTimeSeconds: number;
+        };
+        HealthFailure: {
+            /** @enum {string} */
+            code: "NON_FINITE_STATE" | "NON_FINITE_METRICS";
+            bodyId?: string | null;
+            field?: string | null;
+            /** Format: int64 */
+            step: number;
+            /** Format: double */
+            simulationTimeSeconds: number;
+            value?: string | null;
+            message: string;
+        };
+        SimulationHealthMetrics: {
+            /** Format: double */
+            currentEnergyDrift: number;
+            /** Format: double */
+            peakEnergyDrift: number;
+            /** Format: int64 */
+            peakEnergyDriftStep: number;
+            /** Format: double */
+            peakEnergyDriftSimulationTimeSeconds: number;
+            /** Format: double */
+            currentAngularMomentumDrift?: number | null;
+            /** Format: double */
+            peakAngularMomentumDrift?: number | null;
+            /** Format: int64 */
+            peakAngularMomentumDriftStep?: number | null;
+            /** Format: double */
+            peakAngularMomentumDriftSimulationTimeSeconds?: number | null;
+            energyTrend: components["schemas"]["DriftTrend"];
+            angularMomentumTrend: components["schemas"]["DriftTrend"];
+            /** Format: double */
+            closestApproachMeters?: number | null;
+            /** Format: int64 */
+            closeEncounterCount: number;
+            latestCloseEncounter?: components["schemas"]["HealthCloseEncounter"] | null;
+        };
+        SimulationHealthReport: {
+            status: components["schemas"]["SimulationHealthStatus"];
+            metrics: components["schemas"]["SimulationHealthMetrics"];
+            thresholds: components["schemas"]["HealthThresholds"];
+            reasons: components["schemas"]["HealthReason"][];
+            recommendations: components["schemas"]["HealthRecommendation"][];
+            failure?: components["schemas"]["HealthFailure"] | null;
+            /** Format: int64 */
+            analyzedStep: number;
+            /** Format: double */
+            analyzedSimulationTimeSeconds: number;
+            /** Format: int64 */
+            sampleStride: number;
+            /** Format: int64 */
+            sampleCount: number;
+        };
         ExperimentSummary: {
             /** Format: uuid */
             id: string;
@@ -537,11 +742,14 @@ export interface components {
             /** Format: int64 */
             storageBytes?: number;
             errorCode?: string | null;
+            healthStatus?: components["schemas"]["SimulationHealthStatus"] | null;
+            lineage?: components["schemas"]["ExperimentLineage"] | null;
         };
         Experiment: components["schemas"]["ExperimentSummary"] & {
             config: components["schemas"]["SimulationConfig"];
             state?: components["schemas"]["SimulationState"] | null;
             metrics?: components["schemas"]["Metrics"] | null;
+            healthReport?: components["schemas"]["SimulationHealthReport"] | null;
             trajectory: components["schemas"]["TrajectoryInfo"];
             events: components["schemas"]["SimulationEvent"][];
             /**
@@ -653,7 +861,7 @@ export interface components {
         };
         ApiError: {
             /** @enum {string} */
-            code: "VALIDATION_FAILED" | "EXPERIMENT_NOT_FOUND" | "ILLEGAL_STATE_TRANSITION" | "EXPERIMENT_NOT_EDITABLE" | "QUEUE_CONFLICT" | "UNSUPPORTED_ACTION_PAYLOAD" | "MALFORMED_REQUEST" | "STORAGE_FAILURE" | "REPLAY_QUEUE_FULL" | "REPLAY_JOB_NOT_FOUND" | "INTERNAL_ERROR";
+            code: "VALIDATION_FAILED" | "INVALID_RETRY_CONTEXT" | "EXPERIMENT_NOT_FOUND" | "ILLEGAL_STATE_TRANSITION" | "EXPERIMENT_NOT_EDITABLE" | "QUEUE_CONFLICT" | "UNSUPPORTED_ACTION_PAYLOAD" | "MALFORMED_REQUEST" | "STORAGE_FAILURE" | "REPLAY_QUEUE_FULL" | "REPLAY_JOB_NOT_FOUND" | "INTERNAL_ERROR";
             message: string;
             /** Format: date-time */
             timestamp: string;

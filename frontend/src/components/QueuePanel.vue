@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useExperimentsStore } from '../stores/experiments'
-import { EXPERIMENT_STATUS_LABELS, isTerminalStatus } from '../contracts'
+import { EXPERIMENT_STATUS_LABELS } from '../contracts'
 import { formatBytes, formatInteger } from '../lib/format'
 
 const store = useExperimentsStore()
@@ -9,6 +9,12 @@ const reorderMode = ref(false)
 const reorderIds = ref<string[]>([])
 
 const queued = computed(() => store.queued)
+const healthLabels = {
+  GOOD: '可信度良好',
+  WARNING: '谨慎解读',
+  POOR: '误差明显',
+  FAILED: '计算失败',
+} as const
 
 function toggleReorder(): void {
   reorderMode.value = !reorderMode.value
@@ -76,8 +82,10 @@ async function confirmReorder(): Promise<void> {
           </span>
           <RouterLink class="queue-name" :to="'/experiments/' + item.id" :title="item.name">{{ item.name }}</RouterLink>
           <span class="queue-status">{{ EXPERIMENT_STATUS_LABELS[item.status] }}</span>
+          <span v-if="item.healthStatus" class="health-badge" :data-health="item.healthStatus">{{ healthLabels[item.healthStatus] }}</span>
         </div>
         <div class="queue-meta">
+          <span v-if="item.lineage">第 {{ item.lineage.retryDepth }} 次对照实验</span>
           <span>{{ item.bodyCount }} 体</span>
           <span>步骤 {{ formatInteger(item.progress.step) }}</span>
           <span v-if="item.progress.completionRatio !== null && item.progress.completionRatio !== undefined">
@@ -93,7 +101,6 @@ async function confirmReorder(): Promise<void> {
           <button v-if="item.status === 'RUNNING'" type="button" @click="store.submitActionFor(item.id, 'PAUSE')">暂停</button>
           <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitActionFor(item.id, 'RESUME')">继续</button>
           <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitActionFor(item.id, 'STEP')">单步</button>
-          <button v-if="isTerminalStatus(item.status)" type="button" @click="store.submitActionFor(item.id, 'RESTART')">重启</button>
           <button type="button" class="danger" @click="store.deleteExperiment(item.id)">删除</button>
           <RouterLink v-if="item.status === 'COMPLETED'" :to="'/reports/' + item.id">报告</RouterLink>
         </div>

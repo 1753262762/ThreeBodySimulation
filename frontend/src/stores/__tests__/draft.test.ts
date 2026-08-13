@@ -94,6 +94,27 @@ describe('draft store（F2/F3 提交流）', () => {
     spy.mockRestore()
   })
 
+  it('停止输入 500ms 后自动校验，并丢弃乱序旧响应', async () => {
+    vi.useFakeTimers()
+    let resolveOld!: (result: ValidationResult) => void
+    const spy = vi.spyOn(api, 'validateConfig')
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve }))
+      .mockResolvedValueOnce({ ...warningResult(), issues: [] })
+    const store = useDraftStore()
+
+    await vi.advanceTimersByTimeAsync(500)
+    store.draft.timeStep = '1200'
+    await nextTick()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(spy).toHaveBeenCalledTimes(2)
+    expect(store.serverValidation?.issues).toEqual([])
+
+    resolveOld(warningResult())
+    await Promise.resolve()
+    expect(store.serverValidation?.issues).toEqual([])
+    vi.useRealTimers()
+  })
+
   it('Warning 确认随草稿变化失效，返回修改会清除确认', async () => {
     vi.spyOn(api, 'validateConfig').mockResolvedValue(warningResult())
     const store = useDraftStore()

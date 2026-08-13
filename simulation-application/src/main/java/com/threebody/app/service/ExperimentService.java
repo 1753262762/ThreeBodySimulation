@@ -5,11 +5,14 @@ import com.threebody.app.domain.EndReason;
 import com.threebody.app.domain.EventPhase;
 import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentAction;
+import com.threebody.app.domain.ExperimentLineage;
 import com.threebody.app.domain.ExperimentMetrics;
+import com.threebody.app.domain.ExperimentRetryRequest;
 import com.threebody.app.domain.ExperimentStatus;
 import com.threebody.app.domain.Progress;
 import com.threebody.app.domain.SimulationEvent;
 import com.threebody.app.domain.SimulationEventType;
+import com.threebody.app.domain.SimulationHealthStatus;
 import com.threebody.app.domain.TrajectoryInfo;
 import com.threebody.app.event.ExperimentEventListener;
 import com.threebody.app.event.ExperimentMessage;
@@ -39,6 +42,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -135,6 +139,9 @@ public class ExperimentService implements AutoCloseable {
 
     /** Serializes sequence allocation with event enqueue per experiment. */
     private final Map<String, Object> publicationLocks = new ConcurrentHashMap<>();
+
+    /** Run 级 Health 增量状态；只由单 worker 创建和更新。 */
+    private final Map<String, SimulationHealthAnalyzer> healthAnalyzers = new ConcurrentHashMap<>();
 
     /** 用于抽样指标的墙钟计时。 */
     private volatile long lastMetricsWallTime = 0L;
@@ -336,17 +343,24 @@ public class ExperimentService implements AutoCloseable {
     // ============================ 创建与编辑 ============================
 
     public Experiment createExperiment(String name, SimulationConfig config) {
+        return createExperiment(name, config, null);
+    }
+
+    public Experiment createExperiment(String name, SimulationConfig config,
+            ExperimentRetryRequest retryRequest) {
         ValidationResult vr = ConfigValidator.validate(config);
         if (!vr.valid()) {
             throw new ConfigValidationException(vr.issues());
         }
         SimulationConfig forExperiment = (vr.normalizedConfig() != null ? vr.normalizedConfig() : config)
                 .withName(name != null && !name.isBlank() ? name : config.name());
-        Experiment e = new Experiment(java.util.UUID.randomUUID().toString(),
-                forExperiment.name() != null ? forExperiment.name() : "未命名实验", forExperiment);
-        eventSequences.put(e.id(), new AtomicLong(0));
-
+        Experiment e;
         synchronized (queue) {
+            ExperimentLineage lineage = buildLineage(retryRequest, forExperiment);
+            e = new Experiment(java.util.UUID.randomUUID().toString(),
+                    forExperiment.name() != null ? forExperiment.name() : "未命名实验",
+                    forExperiment, lineage);
+            eventSequences.put(e.id(), new AtomicLong(0));
             experiments.put(e.id(), e);
             queue.add(e.id());
         }
@@ -354,6 +368,64 @@ public class ExperimentService implements AutoCloseable {
         scheduleNext();
         broadcastStatus(e, ExperimentStatus.QUEUED, null, "实验已创建并入队。");
         return e;
+    }
+
+    private ExperimentLineage buildLineage(ExperimentRetryRequest retryRequest,
+            SimulationConfig targetConfig) {
+        if (retryRequest == null) return null;
+        if (retryRequest.sourceExperimentId() == null || retryRequest.sourceExperimentId().isBlank()
+                || retryRequest.recommendationCode() == null || retryRequest.recommendationCode().isBlank()
+                || retryRequest.strategy() == null) {
+            throw new RetryContextException("对照实验来源、建议编码和保留策略均不能为空");
+        }
+        Experiment source = experiments.get(retryRequest.sourceExperimentId());
+        if (source == null) {
+            throw new RetryContextException("源运行记录不存在：" + retryRequest.sourceExperimentId());
+        }
+        boolean recommendationExists = source.healthReport() != null
+                && source.healthReport().recommendations().stream()
+                        .anyMatch(item -> retryRequest.recommendationCode().equals(item.code()));
+        if (!recommendationExists) {
+            throw new RetryContextException("源运行记录没有当前建议：" + retryRequest.recommendationCode());
+        }
+        SimulationConfig before = source.config();
+        List<String> changedFields = changedFields(before, targetConfig);
+        ExperimentLineage parent = source.lineage();
+        Long beforeSteps = before.estimatedTotalSteps();
+        Long afterSteps = targetConfig.estimatedTotalSteps();
+        return new ExperimentLineage(
+                source.id(), source.name(), parent != null ? parent.rootExperimentId() : source.id(),
+                parent != null ? parent.retryDepth() + 1 : 1,
+                retryRequest.recommendationCode(), retryRequest.strategy(),
+                before.timeStepSeconds(), targetConfig.timeStepSeconds(),
+                before.maxSteps(), targetConfig.maxSteps(),
+                before.targetSimulationTimeSeconds(), targetConfig.targetSimulationTimeSeconds(),
+                estimatedDuration(before, beforeSteps), estimatedDuration(targetConfig, afterSteps),
+                beforeSteps, afterSteps, changedFields,
+                source.healthReport() != null ? source.healthReport().status() : null);
+    }
+
+    private static Double estimatedDuration(SimulationConfig config, Long steps) {
+        return steps == null ? null : steps * config.timeStepSeconds();
+    }
+
+    private static List<String> changedFields(SimulationConfig before, SimulationConfig after) {
+        List<String> changed = new ArrayList<>();
+        if (Double.compare(before.timeStepSeconds(), after.timeStepSeconds()) != 0) {
+            changed.add("timeStepSeconds");
+        }
+        if (!Objects.equals(before.maxSteps(), after.maxSteps())) changed.add("maxSteps");
+        if (!Objects.equals(before.targetSimulationTimeSeconds(), after.targetSimulationTimeSeconds())) {
+            changed.add("targetSimulationTimeSeconds");
+        }
+        if (Double.compare(before.softeningLengthMeters(), after.softeningLengthMeters()) != 0) {
+            changed.add("softeningLengthMeters");
+        }
+        if (Double.compare(before.gravitationalConstant(), after.gravitationalConstant()) != 0) {
+            changed.add("gravitationalConstant");
+        }
+        if (!Objects.equals(before.bodies(), after.bodies())) changed.add("bodies");
+        return changed;
     }
 
     public Experiment updateExperiment(String id, String name, SimulationConfig config) {
@@ -456,6 +528,8 @@ public class ExperimentService implements AutoCloseable {
                     e.setConfig(newConfig);
                     e.setState(null);
                     e.setMetrics(null);
+                    e.setHealthReport(null);
+                    healthAnalyzers.remove(e.id());
                     e.setEndReason(null);
                     e.setCompletedAt(null);
                     e.setStartedAt(null);
@@ -556,6 +630,7 @@ public class ExperimentService implements AutoCloseable {
             publicationLocks.remove(id);
             runGenerations.remove(id);
         }
+        healthAnalyzers.remove(id);
         return repository.delete(id);
     }
 
@@ -630,6 +705,12 @@ public class ExperimentService implements AutoCloseable {
 
         SimulationConfig config = e.config();
         SimulationState state = e.state();
+        boolean healthEligible = state == null || e.healthReport() != null;
+        SimulationHealthAnalyzer healthAnalyzer = healthEligible
+                ? healthAnalyzers.computeIfAbsent(e.id(), ignored ->
+                        new SimulationHealthAnalyzer(config, NBodyIntegrator.initialState(config), e.healthReport()))
+                : null;
+        activeEncounters.clear();
 
         // 初始化
         if (state == null) {
@@ -643,12 +724,23 @@ public class ExperimentService implements AutoCloseable {
             // 计算初始能量基准
             double e0 = MetricsCalculator.totalEnergy(config, state);
             Metrics initMetrics = MetricsCalculator.compute(config, state, e0);
-            ExperimentMetrics initEm = toExperimentMetrics(initMetrics, 0.0, null, null, null, null);
+            ExperimentMetrics initEm = toExperimentMetrics(initMetrics, 0.0,
+                    initMetrics.minimumPairDistanceMeters(), 0L, null, null);
             e.setMetrics(initEm);
+            if (healthAnalyzer != null) {
+                e.setHealthReport(healthAnalyzer.analyze(state, initMetrics, false));
+            }
+
+            if (hasNumericalHealthFailure(e)) {
+                finishNumericalHealthFailure(e, state);
+                return;
+            }
 
             // 发射初始快照与指标
             publishAuthoritativeState(e, state);
             broadcastMetrics(e, state, initEm);
+            broadcastHealth(e);
+            processNearEncounters(e, config, state, NBodyIntegrator.detectNearEncounters(config, state));
             repository.save(e);
         }
 
@@ -664,13 +756,16 @@ public class ExperimentService implements AutoCloseable {
         long lastMetricsStep = state.step();
         long stepsSinceSnapshot = 0L;
         long snapshotStepBudget = realtimeSnapshotStepBudget(config);
-        activeEncounters.clear();
 
         try {
             while (true) {
                 // 检查取消
                 if (cancelToken.get()) {
                     finalizeActiveEncounters(e, e.state());
+                    if (refreshHealthAtBoundary(e, healthAnalyzer, e.state(), !activeEncounters.isEmpty())) {
+                        finishNumericalHealthFailure(e, e.state());
+                        return;
+                    }
                     // submitAction publishes the cancellation snapshot.  A
                     // shutdown/cancel race may reach here before it does, so
                     // only publish when the state has not already been finalised.
@@ -687,6 +782,10 @@ public class ExperimentService implements AutoCloseable {
                 // 检查暂停
                 if (pauseToken.get()) {
                     finalizeActiveEncounters(e, e.state());
+                    if (refreshHealthAtBoundary(e, healthAnalyzer, e.state(), false)) {
+                        finishNumericalHealthFailure(e, e.state());
+                        return;
+                    }
                     e.setStatus(ExperimentStatus.PAUSED);
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "实验已暂停。"));
                     broadcastStatus(e, ExperimentStatus.PAUSED, ExperimentStatus.RUNNING, "实验已暂停。");
@@ -715,6 +814,10 @@ public class ExperimentService implements AutoCloseable {
                     SimulationEvent instabilityEvent = diagnosticEvent(e, unstableState, instability);
                     e.upsertEvent(instabilityEvent);
                     publish(e, ExperimentMessageType.DIAGNOSTIC, instabilityEvent);
+                    if (healthAnalyzer != null) {
+                        e.setHealthReport(healthAnalyzer.fail(ex, unstableState));
+                        broadcastHealth(e);
+                    }
                     e.setEndReason(EndReason.ERROR);
                     e.setStatus(ExperimentStatus.FAILED);
                     e.setErrorMessage(ex.getMessage());
@@ -739,63 +842,19 @@ public class ExperimentService implements AutoCloseable {
                 stepsSinceSnapshot++;
                 offerArchivePoint(e, state, false);
 
-                // 处理近距离事件完整生命周期：
-                // ENTER 首次跨阈值（可靠）；UPDATE 最小距离变化且距上次发布≥500ms（按 eventId 合并）；
-                // FINAL 离开 1.25x 阈值迟滞（可靠），必须携带完整真实最小点。
-                Map<String, String> idToName = nameById(config);
-                Set<String> nearPairsThisStep = new HashSet<>();
-                for (NearEncounter ne : result.nearEncounters()) {
-                    String key = nearPairKey(ne.firstBodyId(), ne.secondBodyId());
-                    nearPairsThisStep.add(key);
-                    ActiveEncounter enc = activeEncounters.get(key);
-                    double distance = ne.distanceMeters();
-                    if (enc == null) {
-                        enc = new ActiveEncounter(
-                                UUID.randomUUID().toString(),
-                                key,
-                                List.of(ne.firstBodyId(), ne.secondBodyId()),
-                                nameOf(idToName, ne.firstBodyId()) + " 与 " + nameOf(idToName, ne.secondBodyId()),
-                                ne.thresholdMeters(),
-                                distance,
-                                distance,
-                                state.step(),
-                                state.simulationTimeSeconds(),
-                                midpoint(state, ne.firstBodyId(), ne.secondBodyId()),
-                                nextSequence(e));
-                        activeEncounters.put(key, enc);
-                        SimulationEvent ev = encounterEvent(e, enc, EventPhase.ENTER, state);
-                        e.upsertEvent(ev);
-                        publishEncounter(e, enc, ev);
-                    } else {
-                        if (distance < enc.closestDistance) {
-                            enc.closestDistance = distance;
-                            enc.closestStep = state.step();
-                            enc.closestTime = state.simulationTimeSeconds();
-                            enc.closestMidpoint = midpoint(state, ne.firstBodyId(), ne.secondBodyId());
-                        }
-                        long nowNanos = monotonicClock.nanoTime();
-                        if (nowNanos - enc.lastUpdatePublishedAt >= ENCOUNTER_UPDATE_MIN_NANOS) {
-                            SimulationEvent ev = encounterEvent(e, enc, EventPhase.UPDATE, state);
-                            e.upsertEvent(ev);
-                            publishEncounter(e, enc, ev);
-                            enc.lastUpdatePublishedAt = nowNanos;
-                        }
+                hasActiveEncounter = processNearEncounters(e, config, state, result.nearEncounters());
+
+                if (healthAnalyzer != null && healthAnalyzer.shouldSample(state.step())
+                        && (e.healthReport() == null || e.healthReport().analyzedStep() != state.step())) {
+                    Metrics sampledMetrics = MetricsCalculator.compute(config, state,
+                            e.metrics() != null ? e.metrics().initialTotalEnergyJoules()
+                                    : MetricsCalculator.totalEnergy(config, NBodyIntegrator.initialState(config)));
+                    e.setHealthReport(healthAnalyzer.analyze(state, sampledMetrics, hasActiveEncounter));
+                    if (hasNumericalHealthFailure(e)) {
+                        finishNumericalHealthFailure(e, state);
+                        return;
                     }
                 }
-                Iterator<Map.Entry<String, ActiveEncounter>> nearIterator =
-                        activeEncounters.entrySet().iterator();
-                while (nearIterator.hasNext()) {
-                    Map.Entry<String, ActiveEncounter> entry = nearIterator.next();
-                    ActiveEncounter enc = entry.getValue();
-                    if (!nearPairsThisStep.contains(entry.getKey())
-                            && pairDistance(state, entry.getKey()) > enc.threshold * 1.25) {
-                        SimulationEvent ev = encounterEvent(e, enc, EventPhase.FINAL, state);
-                        e.upsertEvent(ev);
-                        publishEncounter(e, enc, ev);
-                        nearIterator.remove();
-                    }
-                }
-                hasActiveEncounter = !activeEncounters.isEmpty();
 
                 if (!singleStep && stepsSinceSnapshot >= snapshotStepBudget) {
                     awaitSnapshotDeadline(nextSnapshotDeadline);
@@ -866,7 +925,16 @@ public class ExperimentService implements AutoCloseable {
                             sps,
                             elapsed);
                     e.setMetrics(em);
+                    if (healthAnalyzer != null
+                            && (e.healthReport() == null || e.healthReport().analyzedStep() != state.step())) {
+                        e.setHealthReport(healthAnalyzer.analyze(state, coreMetrics, hasActiveEncounter));
+                    }
+                    if (hasNumericalHealthFailure(e)) {
+                        finishNumericalHealthFailure(e, state);
+                        return;
+                    }
                     broadcastMetrics(e, state, em);
+                    broadcastHealth(e);
                     publishDiagnostics(e, diagnosticEngine, state, em, hasActiveEncounter);
                     lastMetricsStep = state.step();
                     nextMetricsDeadline = advanceDeadline(
@@ -893,10 +961,23 @@ public class ExperimentService implements AutoCloseable {
                     double e0 = e.metrics() != null ? e.metrics().initialTotalEnergyJoules()
                             : MetricsCalculator.totalEnergy(config, state);
                     Metrics coreMetrics = MetricsCalculator.compute(config, state, e0);
+                    Double previousMinimum = e.metrics() != null
+                            ? e.metrics().allTimeMinimumPairDistanceMeters() : null;
+                    boolean finalIsMinimum = previousMinimum == null
+                            || coreMetrics.minimumPairDistanceMeters() < previousMinimum;
                     e.setMetrics(toExperimentMetrics(coreMetrics, 0.0,
-                            e.metrics() != null ? e.metrics().allTimeMinimumPairDistanceMeters() : null,
-                            e.metrics() != null ? e.metrics().allTimeMinimumPairDistanceStep() : null,
+                            finalIsMinimum ? coreMetrics.minimumPairDistanceMeters() : previousMinimum,
+                            finalIsMinimum ? state.step() : e.metrics().allTimeMinimumPairDistanceStep(),
                             null, null));
+                    if (healthAnalyzer != null
+                            && (e.healthReport() == null || e.healthReport().analyzedStep() != state.step())) {
+                        e.setHealthReport(healthAnalyzer.analyze(state, coreMetrics,
+                                !activeEncounters.isEmpty()));
+                    }
+                    if (hasNumericalHealthFailure(e)) {
+                        finishNumericalHealthFailure(e, state);
+                        return;
+                    }
 
                     String reasonMsg = e.endReason() == EndReason.MAX_STEPS ? "达到最大步数，实验完成。" : "达到目标模拟时间，实验完成。";
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, reasonMsg));
@@ -908,6 +989,7 @@ public class ExperimentService implements AutoCloseable {
                     }
                     broadcastStatus(e, ExperimentStatus.COMPLETED, ExperimentStatus.RUNNING, reasonMsg);
                     broadcastMetrics(e, state, e.metrics());
+                    broadcastHealth(e);
                     publishAuthoritativeState(e, state);
                     repository.save(e);
                     workerBusy.set(false);
@@ -917,6 +999,10 @@ public class ExperimentService implements AutoCloseable {
 
                 if (singleStep && !cancelToken.get()) {
                     finalizeActiveEncounters(e, state);
+                    if (refreshHealthAtBoundary(e, healthAnalyzer, state, false)) {
+                        finishNumericalHealthFailure(e, state);
+                        return;
+                    }
                     e.setStatus(ExperimentStatus.PAUSED);
                     e.addEvent(makeEvent(e, SimulationEventType.STATUS_CHANGE, "单步完成，实验已暂停。"));
                     broadcastStatus(e, ExperimentStatus.PAUSED, ExperimentStatus.RUNNING,
@@ -1090,6 +1176,38 @@ public class ExperimentService implements AutoCloseable {
         publish(e, ExperimentMessageType.METRICS, payload);
     }
 
+    private void broadcastHealth(Experiment e) {
+        if (e.healthReport() != null) {
+            publish(e, ExperimentMessageType.HEALTH, e.healthReport());
+        }
+    }
+
+    private boolean hasNumericalHealthFailure(Experiment e) {
+        return e.healthReport() != null
+                && e.healthReport().status() == SimulationHealthStatus.FAILED;
+    }
+
+    private void finishNumericalHealthFailure(Experiment e, SimulationState state) {
+        finalizeActiveEncounters(e, state);
+        String message = e.healthReport() != null && e.healthReport().failure() != null
+                ? e.healthReport().failure().message()
+                : "A non-finite derived simulation metric was detected.";
+        e.setEndReason(EndReason.ERROR);
+        e.setStatus(ExperimentStatus.FAILED);
+        e.setErrorMessage(message);
+        e.setCompletedAt(Instant.now());
+        e.addEvent(makeEvent(e, SimulationEventType.ERROR, "Numerical instability: " + message));
+        broadcastHealth(e);
+        broadcastError(e, "NUMERICAL_INSTABILITY", message, state.step(), false);
+        broadcastStatus(e, ExperimentStatus.FAILED, ExperimentStatus.RUNNING,
+                "Numerical instability: " + message);
+        publishAuthoritativeState(e, state);
+        flushAndReleaseArchive(e);
+        repository.save(e);
+        workerBusy.set(false);
+        scheduleNext();
+    }
+
     private void broadcastError(Experiment e, String code, String message, long step, boolean recoverable) {
         ErrorPayload payload = new ErrorPayload(code, message, step, recoverable);
         publish(e, ExperimentMessageType.ERROR, payload);
@@ -1114,6 +1232,87 @@ public class ExperimentService implements AutoCloseable {
                 ? "NEAR_UPDATE:" + enc.eventId
                 : null;
         publish(e, ExperimentMessageType.NEAR_ENCOUNTER, ev, mergeKey);
+        SimulationHealthAnalyzer analyzer = healthAnalyzers.get(e.id());
+        if (analyzer != null) {
+            analyzer.observeEncounter(ev);
+            e.setHealthReport(analyzer.report());
+            broadcastHealth(e);
+        }
+    }
+
+    /** 处理一步近遇边界，返回当前是否仍有活动近遇。 */
+    private boolean processNearEncounters(Experiment e, SimulationConfig config,
+            SimulationState state, List<NearEncounter> nearEncounters) {
+        Map<String, String> idToName = nameById(config);
+        Set<String> nearPairsThisStep = new HashSet<>();
+        for (NearEncounter ne : nearEncounters) {
+            String key = nearPairKey(ne.firstBodyId(), ne.secondBodyId());
+            nearPairsThisStep.add(key);
+            ActiveEncounter enc = activeEncounters.get(key);
+            double distance = ne.distanceMeters();
+            if (enc == null) {
+                enc = new ActiveEncounter(
+                        UUID.randomUUID().toString(), key,
+                        List.of(ne.firstBodyId(), ne.secondBodyId()),
+                        nameOf(idToName, ne.firstBodyId()) + " 与 " + nameOf(idToName, ne.secondBodyId()),
+                        ne.thresholdMeters(), distance, distance, state.step(),
+                        state.simulationTimeSeconds(), midpoint(state, ne.firstBodyId(), ne.secondBodyId()),
+                        nextSequence(e));
+                activeEncounters.put(key, enc);
+                SimulationEvent event = encounterEvent(e, enc, EventPhase.ENTER, state);
+                e.upsertEvent(event);
+                publishEncounter(e, enc, event);
+            } else {
+                if (distance < enc.closestDistance) {
+                    enc.closestDistance = distance;
+                    enc.closestStep = state.step();
+                    enc.closestTime = state.simulationTimeSeconds();
+                    enc.closestMidpoint = midpoint(state, ne.firstBodyId(), ne.secondBodyId());
+                }
+                long nowNanos = monotonicClock.nanoTime();
+                if (nowNanos - enc.lastUpdatePublishedAt >= ENCOUNTER_UPDATE_MIN_NANOS) {
+                    SimulationEvent event = encounterEvent(e, enc, EventPhase.UPDATE, state);
+                    e.upsertEvent(event);
+                    publishEncounter(e, enc, event);
+                    enc.lastUpdatePublishedAt = nowNanos;
+                }
+            }
+        }
+        Iterator<Map.Entry<String, ActiveEncounter>> iterator = activeEncounters.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<String, ActiveEncounter> entry = iterator.next();
+            ActiveEncounter enc = entry.getValue();
+            if (!nearPairsThisStep.contains(entry.getKey())
+                    && pairDistance(state, entry.getKey()) > enc.threshold * 1.25) {
+                SimulationEvent event = encounterEvent(e, enc, EventPhase.FINAL, state);
+                e.upsertEvent(event);
+                publishEncounter(e, enc, event);
+                iterator.remove();
+            }
+        }
+        return !activeEncounters.isEmpty();
+    }
+
+    private boolean refreshHealthAtBoundary(Experiment e, SimulationHealthAnalyzer analyzer,
+            SimulationState state, boolean hasActiveEncounter) {
+        if (analyzer == null || state == null) return false;
+        double initialEnergy = e.metrics() != null ? e.metrics().initialTotalEnergyJoules()
+                : MetricsCalculator.totalEnergy(e.config(), NBodyIntegrator.initialState(e.config()));
+        Metrics metrics = MetricsCalculator.compute(e.config(), state, initialEnergy);
+        Double previousMinimum = e.metrics() != null
+                ? e.metrics().allTimeMinimumPairDistanceMeters() : null;
+        boolean boundaryIsMinimum = previousMinimum == null
+                || metrics.minimumPairDistanceMeters() < previousMinimum;
+        e.setMetrics(toExperimentMetrics(metrics, 0.0,
+                boundaryIsMinimum ? metrics.minimumPairDistanceMeters() : previousMinimum,
+                boundaryIsMinimum ? state.step() : e.metrics().allTimeMinimumPairDistanceStep(),
+                null, null));
+        if (e.healthReport() == null || e.healthReport().analyzedStep() != state.step()) {
+            e.setHealthReport(analyzer.analyze(state, metrics, hasActiveEncounter));
+        }
+        broadcastMetrics(e, state, e.metrics());
+        broadcastHealth(e);
+        return hasNumericalHealthFailure(e);
     }
 
     private SimulationEvent encounterEvent(Experiment e, ActiveEncounter enc, EventPhase phase,
@@ -1396,6 +1595,12 @@ public class ExperimentService implements AutoCloseable {
 
     public static class QueueConflictException extends RuntimeException {
         public QueueConflictException(String message) {
+            super(message);
+        }
+    }
+
+    public static class RetryContextException extends RuntimeException {
+        public RetryContextException(String message) {
             super(message);
         }
     }

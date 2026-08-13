@@ -7,7 +7,6 @@ import com.threebody.app.domain.DiagnosticSeverity;
 import com.threebody.core.BodyState;
 import com.threebody.core.ConfigValidator;
 import com.threebody.core.Metrics;
-import com.threebody.core.MetricsCalculator;
 import com.threebody.core.SimulationConfig;
 import com.threebody.core.SimulationState;
 import com.threebody.core.ValidationIssue;
@@ -31,11 +30,6 @@ public final class DiagnosticEngine {
     /** 冷却期：指标发布周期数。 */
     public static final int COOLDOWN_PERIODS = 10;
 
-    /** 能量误差等级阈值。 */
-    private static final double ENERGY_NOTICE = 1e-3;
-    private static final double ENERGY_WARNING = 1e-2;
-    private static final double ENERGY_CRITICAL = 5e-2;
-
     private static final double ESCAPE_WARNING_RATIO = 2.0;
     private static final double ESCAPE_CRITICAL_RATIO = 5.0;
 
@@ -44,7 +38,6 @@ public final class DiagnosticEngine {
     private static final int DISASSEMBLY_CONSECUTIVE_PERIODS = 3;
 
     private final SimulationConfig config;
-    private final double initialEnergyScale;
     private final double initialRmsRadius;
     private final boolean hadHighStartupRisk;
 
@@ -62,11 +55,6 @@ public final class DiagnosticEngine {
 
     public DiagnosticEngine(SimulationConfig config, SimulationState initialState) {
         this.config = config;
-        double e0 = MetricsCalculator.totalEnergy(config, initialState);
-        double k0 = MetricsCalculator.kineticEnergy(config, initialState);
-        double u0 = MetricsCalculator.potentialEnergy(config, initialState);
-        this.initialEnergyScale = Math.max(Math.abs(k0) + Math.abs(u0),
-                Math.max(Math.abs(e0), Double.MIN_NORMAL));
         this.initialRmsRadius = rmsRadius(config, initialState);
         this.hadHighStartupRisk = hasHighStartupRisk(config);
     }
@@ -85,7 +73,6 @@ public final class DiagnosticEngine {
         currentMetricIndex++;
         List<Diagnostic> found = new ArrayList<>();
 
-        Diagnostic energy = evaluateEnergyError(state, metrics);
         Diagnostic escape = evaluateEscape(state);
         Diagnostic deflection = evaluateDeflection(state, hasActiveEncounter);
         Diagnostic disassembly = evaluateDisassembly(state);
@@ -95,73 +82,10 @@ public final class DiagnosticEngine {
         if (deflection != null) physical.add(deflection);
         if (disassembly != null) physical.add(disassembly);
 
-        boolean energyWarningOrAbove = energy != null
-                && energy.severity().compareTo(DiagnosticSeverity.WARNING) >= 0;
-
-        if (energy != null) {
-            found.add(withCauseCategory(energy, energyWarningOrAbove && !physical.isEmpty()
-                    ? DiagnosticCauseCategory.MIXED : DiagnosticCauseCategory.NUMERICAL_ERROR));
-        }
         for (Diagnostic d : physical) {
-            DiagnosticCauseCategory category = energyWarningOrAbove
-                    ? DiagnosticCauseCategory.MIXED
-                    : DiagnosticCauseCategory.PHYSICAL_PHENOMENON;
-            found.add(withCauseCategory(d, category));
+            found.add(withCauseCategory(d, DiagnosticCauseCategory.PHYSICAL_PHENOMENON));
         }
         return found;
-    }
-
-    private Diagnostic evaluateEnergyError(SimulationState state, Metrics metrics) {
-        if (metrics == null || !Double.isFinite(metrics.totalEnergyJoules())) {
-            return null;
-        }
-        double error = Math.abs(metrics.totalEnergyJoules() - metrics.initialTotalEnergyJoules())
-                / initialEnergyScale;
-
-        DiagnosticSeverity severity = null;
-        if (error > ENERGY_CRITICAL) {
-            severity = DiagnosticSeverity.CRITICAL;
-        } else if (error > ENERGY_WARNING) {
-            severity = DiagnosticSeverity.WARNING;
-        } else if (error > ENERGY_NOTICE) {
-            severity = DiagnosticSeverity.NOTICE;
-        }
-        if (severity == null) {
-            // 降到阈值一半以下时重新武装
-            disarmBelowHalf(error);
-            return null;
-        }
-
-        String key = "ENERGY_DRIFT";
-        DiagnosticSeverity previous = lastSeverity.get(key);
-        boolean firstEmission = previous == null;
-        boolean escalated = previous != null && severity.ordinal() > previous.ordinal();
-        if (!firstEmission && !escalated && !isCooldownPassed(key)) {
-            return null;
-        }
-        // 跨级检测：当前等级不低于已发布等级时才发布（严格升级或首次）
-        if (!firstEmission && !escalated) {
-            return null;
-        }
-
-        lastSeverity.put(key, severity);
-        cooldownUntil.put(key, currentMetricIndex + COOLDOWN_PERIODS);
-        double drift = metrics.relativeEnergyDrift();
-
-        DiagnosticEvidence evidence = new DiagnosticEvidence(
-                config.timeStepSeconds(), config.softeningLengthMeters(),
-                error, Double.isFinite(drift) ? drift : null,
-                metrics.minimumPairDistanceMeters(), null, null, null, null, null, null);
-
-        return new Diagnostic(
-                "ENERGY_DRIFT",
-                severity,
-                DiagnosticCauseCategory.NUMERICAL_ERROR,
-                severityText(severity, "系统能量相对初始基准的归一化误差越过了 "
-                        + formatBoundary(error) + " 阈值，可能由时间步长或软化尺度不足引起。"),
-                List.of("时间步长过大，无法分辨快速轨道运动", "软化长度不足，近距离引力加速度偏大"),
-                evidence,
-                List.of("建议减小时间步长后重新运行", "可适当增大软化长度以平滑近距离引力"));
     }
 
     private Diagnostic evaluateEscape(SimulationState state) {
@@ -358,17 +282,6 @@ public final class DiagnosticEngine {
         return !cooldownUntil.containsKey(key) || currentMetricIndex >= cooldownUntil.get(key);
     }
 
-    private void disarmBelowHalf(double error) {
-        if (lastSeverity.isEmpty()) {
-            return;
-        }
-        // 简化武装逻辑：误差低于 NOTICE 阈值一半时视为重新武装
-        if (error < ENERGY_NOTICE / 2.0) {
-            lastSeverity.clear();
-            cooldownUntil.clear();
-        }
-    }
-
     // ============================ 辅助 ============================
 
     private Diagnostic withCauseCategory(Diagnostic d, DiagnosticCauseCategory category) {
@@ -386,12 +299,6 @@ public final class DiagnosticEngine {
             case WARNING -> "警告：" + message;
             case CRITICAL -> "严重：" + message;
         };
-    }
-
-    private static String formatBoundary(double value) {
-        if (value > ENERGY_CRITICAL) return "5e-2";
-        if (value > ENERGY_WARNING) return "1e-2";
-        return "1e-3";
     }
 
     private double rmsRadius(SimulationConfig config, SimulationState state) {

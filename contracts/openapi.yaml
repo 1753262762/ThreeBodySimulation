@@ -557,6 +557,74 @@ components:
           nullable: true
           enum: [CAUTION, HIGH]
           description: 仅 WARNING 填写；ERROR 为 null
+        guidance:
+          allOf:
+            - $ref: '#/components/schemas/ValidationGuidance'
+          nullable: true
+          description: 风险的结构化解释；ERROR 或无建议时为 null
+    GuidanceEvidence:
+      type: object
+      required: [code, value, bodyIds]
+      properties:
+        code: { type: string }
+        value: { type: number, format: double }
+        referenceValue: { type: number, format: double, nullable: true }
+        ratio: { type: number, format: double, nullable: true }
+        bodyIds:
+          type: array
+          items: { type: string }
+    GuidanceConfigPatch:
+      type: object
+      properties:
+        timeStepSeconds: { type: number, format: double, nullable: true }
+        maxSteps: { type: integer, format: int64, nullable: true }
+    GuidanceAction:
+      type: object
+      required: [code, mode, label, rationale, tradeoff]
+      properties:
+        code: { type: string }
+        mode:
+          type: string
+          enum: [APPLY_PATCH, MANUAL_REVIEW]
+        label: { type: string }
+        rationale: { type: string }
+        tradeoff: { type: string }
+        configPatch:
+          allOf:
+            - $ref: '#/components/schemas/GuidanceConfigPatch'
+          nullable: true
+        adjustmentPolicy:
+          type: string
+          nullable: true
+          enum: [PRESERVE_SIMULATION_DURATION]
+    ValidationGuidance:
+      type: object
+      required: [observation, impact, evidence, primaryAction, alternatives]
+      properties:
+        observation: { type: string }
+        impact: { type: string }
+        evidence:
+          type: array
+          items: { $ref: '#/components/schemas/GuidanceEvidence' }
+        primaryAction: { $ref: '#/components/schemas/GuidanceAction' }
+        alternatives:
+          type: array
+          items: { $ref: '#/components/schemas/GuidanceAction' }
+    ConfigSummary:
+      type: object
+      required: [initialMinimumPairBodyIds]
+      properties:
+        estimatedSteps: { type: integer, format: int64, nullable: true }
+        estimatedSimulationTimeSeconds: { type: number, format: double, nullable: true }
+        limitingEndCondition:
+          type: string
+          nullable: true
+          enum: [MAX_STEPS, TARGET_TIME, BOTH]
+        initialMinimumPairDistanceMeters: { type: number, format: double, nullable: true }
+        initialMinimumPairBodyIds:
+          type: array
+          items: { type: string }
+        softeningToInitialDistanceRatio: { type: number, format: double, nullable: true }
     ValidationResult:
       type: object
       required: [valid, issues]
@@ -577,6 +645,10 @@ components:
           type: integer
           format: int64
           nullable: true
+        configSummary:
+          allOf:
+            - $ref: '#/components/schemas/ConfigSummary'
+          nullable: true
     ExperimentStatus:
       type: string
       enum: [QUEUED, RUNNING, PAUSED, COMPLETED, CANCELLED, FAILED]
@@ -593,6 +665,58 @@ components:
           maxLength: 80
         config:
           $ref: '#/components/schemas/SimulationConfig'
+        retryContext:
+          allOf:
+            - $ref: '#/components/schemas/ExperimentRetryContext'
+          nullable: true
+    ExperimentRetryContext:
+      type: object
+      required: [sourceExperimentId, recommendationCode, strategy]
+      properties:
+        sourceExperimentId:
+          type: string
+          format: uuid
+        recommendationCode:
+          type: string
+        strategy:
+          type: string
+          enum: [PRESERVE_SIMULATION_DURATION, PRESERVE_STEP_COUNT]
+    ExperimentLineage:
+      type: object
+      required:
+        - sourceExperimentId
+        - sourceExperimentName
+        - rootExperimentId
+        - retryDepth
+        - recommendationCode
+        - strategy
+        - changedFields
+      properties:
+        sourceExperimentId: { type: string, format: uuid }
+        sourceExperimentName: { type: string }
+        rootExperimentId: { type: string, format: uuid }
+        retryDepth: { type: integer, format: int32, minimum: 1 }
+        recommendationCode: { type: string }
+        strategy:
+          type: string
+          enum: [PRESERVE_SIMULATION_DURATION, PRESERVE_STEP_COUNT]
+        beforeTimeStepSeconds: { type: number, format: double, nullable: true }
+        afterTimeStepSeconds: { type: number, format: double, nullable: true }
+        beforeMaxSteps: { type: integer, format: int64, nullable: true }
+        afterMaxSteps: { type: integer, format: int64, nullable: true }
+        beforeTargetSimulationTimeSeconds: { type: number, format: double, nullable: true }
+        afterTargetSimulationTimeSeconds: { type: number, format: double, nullable: true }
+        beforeEstimatedSimulationTimeSeconds: { type: number, format: double, nullable: true }
+        afterEstimatedSimulationTimeSeconds: { type: number, format: double, nullable: true }
+        beforeEstimatedSteps: { type: integer, format: int64, nullable: true }
+        afterEstimatedSteps: { type: integer, format: int64, nullable: true }
+        changedFields:
+          type: array
+          items: { type: string }
+        sourceHealthStatus:
+          allOf:
+            - $ref: '#/components/schemas/SimulationHealthStatus'
+          nullable: true
     Progress:
       type: object
       required: [step, simulationTimeSeconds]
@@ -895,6 +1019,132 @@ components:
           type: integer
           format: int32
           description: 实时画布每个天体保留的最近点数，固定为 8000
+    SimulationHealthStatus:
+      type: string
+      enum: [GOOD, WARNING, POOR, FAILED]
+    DriftTrend:
+      type: string
+      enum: [STABLE, SLOWLY_INCREASING, RAPIDLY_INCREASING]
+    HealthReasonSeverity:
+      type: string
+      enum: [INFO, WARNING, ERROR]
+    HealthThresholds:
+      type: object
+      required: [energyWarning, energyPoor, angularMomentumWarning, angularMomentumPoor]
+      properties:
+        energyWarning: { type: number, format: double, example: 0.001 }
+        energyPoor: { type: number, format: double, example: 0.01 }
+        angularMomentumWarning: { type: number, format: double, example: 0.001 }
+        angularMomentumPoor: { type: number, format: double, example: 0.01 }
+    HealthReason:
+      type: object
+      required: [code, severity, message]
+      properties:
+        code:
+          type: string
+          enum: [CONSERVATION_WITHIN_TOLERANCE, ENERGY_DRIFT_ELEVATED, ENERGY_DRIFT_HIGH, ANGULAR_MOMENTUM_DRIFT_ELEVATED, ANGULAR_MOMENTUM_DRIFT_HIGH, CLOSE_ENCOUNTER_NEAR_DRIFT, SOFTENING_SCALE_APPROACHED, NON_FINITE_STATE, NON_FINITE_METRICS]
+        severity:
+          $ref: '#/components/schemas/HealthReasonSeverity'
+        metric:
+          type: string
+          nullable: true
+        message:
+          type: string
+    HealthConfigPatch:
+      type: object
+      properties:
+        timeStepSeconds:
+          type: number
+          format: double
+          nullable: true
+    HealthRecommendation:
+      type: object
+      required: [code, action, message, configPatch]
+      properties:
+        code:
+          type: string
+          enum: [REDUCE_TIME_STEP]
+        action:
+          type: string
+          enum: [CLONE_AND_RETRY]
+        message:
+          type: string
+        configPatch:
+          $ref: '#/components/schemas/HealthConfigPatch'
+        rationale:
+          type: string
+          nullable: true
+        tradeoff:
+          type: string
+          nullable: true
+        verification:
+          type: string
+          nullable: true
+    HealthCloseEncounter:
+      type: object
+      required: [eventId, bodyIds, distanceMeters, step, simulationTimeSeconds]
+      properties:
+        eventId: { type: string }
+        bodyIds:
+          type: array
+          items: { type: string }
+        distanceMeters: { type: number, format: double }
+        step: { type: integer, format: int64 }
+        simulationTimeSeconds: { type: number, format: double }
+    HealthFailure:
+      type: object
+      required: [code, step, simulationTimeSeconds, message]
+      properties:
+        code:
+          type: string
+          enum: [NON_FINITE_STATE, NON_FINITE_METRICS]
+        bodyId: { type: string, nullable: true }
+        field: { type: string, nullable: true }
+        step: { type: integer, format: int64 }
+        simulationTimeSeconds: { type: number, format: double }
+        value: { type: string, nullable: true }
+        message: { type: string }
+    SimulationHealthMetrics:
+      type: object
+      required: [currentEnergyDrift, peakEnergyDrift, peakEnergyDriftStep, peakEnergyDriftSimulationTimeSeconds, energyTrend, angularMomentumTrend, closeEncounterCount]
+      properties:
+        currentEnergyDrift: { type: number, format: double }
+        peakEnergyDrift: { type: number, format: double }
+        peakEnergyDriftStep: { type: integer, format: int64 }
+        peakEnergyDriftSimulationTimeSeconds: { type: number, format: double }
+        currentAngularMomentumDrift: { type: number, format: double, nullable: true }
+        peakAngularMomentumDrift: { type: number, format: double, nullable: true }
+        peakAngularMomentumDriftStep: { type: integer, format: int64, nullable: true }
+        peakAngularMomentumDriftSimulationTimeSeconds: { type: number, format: double, nullable: true }
+        energyTrend: { $ref: '#/components/schemas/DriftTrend' }
+        angularMomentumTrend: { $ref: '#/components/schemas/DriftTrend' }
+        closestApproachMeters: { type: number, format: double, nullable: true }
+        closeEncounterCount: { type: integer, format: int64 }
+        latestCloseEncounter:
+          allOf:
+            - $ref: '#/components/schemas/HealthCloseEncounter'
+          nullable: true
+    SimulationHealthReport:
+      type: object
+      required: [status, metrics, thresholds, reasons, recommendations, analyzedStep, analyzedSimulationTimeSeconds, sampleStride, sampleCount]
+      properties:
+        status: { $ref: '#/components/schemas/SimulationHealthStatus' }
+        metrics: { $ref: '#/components/schemas/SimulationHealthMetrics' }
+        thresholds: { $ref: '#/components/schemas/HealthThresholds' }
+        reasons:
+          type: array
+          items: { $ref: '#/components/schemas/HealthReason' }
+        recommendations:
+          type: array
+          items: { $ref: '#/components/schemas/HealthRecommendation' }
+        failure:
+          allOf:
+            - $ref: '#/components/schemas/HealthFailure'
+          nullable: true
+        analyzedStep: { type: integer, format: int64 }
+        analyzedSimulationTimeSeconds: { type: number, format: double }
+        sampleStride: { type: integer, format: int64, minimum: 1 }
+        sampleCount: { type: integer, format: int64, minimum: 0 }
     ExperimentSummary:
       type: object
       required: [id, name, status, queuePosition, createdAt, updatedAt, bodyCount, progress]
@@ -936,6 +1186,14 @@ components:
         errorCode:
           type: string
           nullable: true
+        healthStatus:
+          allOf:
+            - $ref: '#/components/schemas/SimulationHealthStatus'
+          nullable: true
+        lineage:
+          allOf:
+            - $ref: '#/components/schemas/ExperimentLineage'
+          nullable: true
     Experiment:
       allOf:
         - $ref: '#/components/schemas/ExperimentSummary'
@@ -951,6 +1209,10 @@ components:
             metrics:
               allOf:
                 - $ref: '#/components/schemas/Metrics'
+              nullable: true
+            healthReport:
+              allOf:
+                - $ref: '#/components/schemas/SimulationHealthReport'
               nullable: true
             trajectory:
               $ref: '#/components/schemas/TrajectoryInfo'
@@ -1154,6 +1416,7 @@ components:
           type: string
           enum:
             - VALIDATION_FAILED
+            - INVALID_RETRY_CONTEXT
             - EXPERIMENT_NOT_FOUND
             - ILLEGAL_STATE_TRANSITION
             - EXPERIMENT_NOT_EDITABLE

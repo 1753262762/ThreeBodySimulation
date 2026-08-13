@@ -5,6 +5,16 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.threebody.app.domain.Experiment;
 import com.threebody.app.domain.ExperimentAction;
 import com.threebody.app.domain.ExperimentStatus;
+import com.threebody.app.domain.ExperimentRetryRequest;
+import com.threebody.app.domain.HealthConfigPatch;
+import com.threebody.app.domain.HealthRecommendation;
+import com.threebody.app.domain.HealthRecommendationAction;
+import com.threebody.app.domain.HealthThresholds;
+import com.threebody.app.domain.RetryStrategy;
+import com.threebody.app.domain.SimulationHealthMetrics;
+import com.threebody.app.domain.SimulationHealthReport;
+import com.threebody.app.domain.SimulationHealthStatus;
+import com.threebody.app.domain.DriftTrend;
 import com.threebody.app.domain.TrajectoryInfo;
 import com.threebody.app.event.ExperimentEventListener;
 import com.threebody.app.event.ExperimentMessage;
@@ -422,6 +432,48 @@ class ExperimentServiceTest {
         assertEquals(2, all.size());
         assertEquals(e1.id(), all.get(0).id());
         assertEquals(e2.id(), all.get(1).id());
+    }
+
+    @Test
+    @DisplayName("创建对照实验验证来源建议并持久化配置差异")
+    void comparisonExperimentPersistsValidatedLineage() {
+        service.createExperiment("阻塞运行", longConfig());
+        Experiment source = service.createExperiment("源运行", longConfig());
+        source.setHealthReport(new SimulationHealthReport(
+                SimulationHealthStatus.WARNING,
+                new SimulationHealthMetrics(0.002, 0.002, 2L, 1200.0,
+                        0.002, 0.002, 2L, 1200.0, DriftTrend.STABLE, DriftTrend.STABLE,
+                        null, 0L, null),
+                HealthThresholds.defaults(), List.of(),
+                List.of(new HealthRecommendation("REDUCE_TIME_STEP",
+                        HealthRecommendationAction.CLONE_AND_RETRY, "创建对照实验",
+                        new HealthConfigPatch(60.0))),
+                null, 2L, 1200.0, 1L, 2L));
+
+        SimulationConfig retryConfig = new SimulationConfig(
+                "对照", source.config().bodies(), 60.0,
+                source.config().gravitationalConstant(), source.config().softeningLengthMeters(),
+                5_000_000L, null);
+        Experiment child = service.createExperiment("对照", retryConfig,
+                new ExperimentRetryRequest(source.id(), "REDUCE_TIME_STEP",
+                        RetryStrategy.PRESERVE_SIMULATION_DURATION));
+
+        assertNotNull(child.lineage());
+        assertEquals(source.id(), child.lineage().sourceExperimentId());
+        assertEquals(1, child.lineage().retryDepth());
+        assertEquals(List.of("timeStepSeconds", "maxSteps"), child.lineage().changedFields());
+        assertTrue(repo.listAll().stream().filter(item -> item.id().equals(child.id()))
+                .findFirst().orElseThrow().lineage() != null);
+    }
+
+    @Test
+    @DisplayName("对照实验拒绝源记录中不存在的建议编码")
+    void comparisonExperimentRejectsUnknownRecommendation() {
+        Experiment source = service.createExperiment("源运行", longConfig());
+        assertThrows(ExperimentService.RetryContextException.class,
+                () -> service.createExperiment("非法对照", longConfig(),
+                        new ExperimentRetryRequest(source.id(), "REDUCE_TIME_STEP",
+                                RetryStrategy.PRESERVE_SIMULATION_DURATION)));
     }
 
     @Test

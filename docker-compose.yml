@@ -1,0 +1,17 @@
+services:
+  app:
+    image: three-body-lab:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8721:8721"
+    environment:
+      SERVER_ADDRESS: "0.0.0.0"
+    volumes:
+      - threebody-data:/home/threebody/.threebody-lab
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  threebody-data:

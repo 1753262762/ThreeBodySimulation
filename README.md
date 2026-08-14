@@ -6,7 +6,17 @@ Three Body Lab 是一个面向本地实验的 **N 体引力数值模拟、实时
 
 ## 界面预览
 
-> 截图位置预留：仓库当前没有已跟踪的项目截图或演示动图，README 暂不引用外部素材。
+### 实时模拟与诊断
+
+![实时模拟界面](<screenshots/2026-08-14/屏幕截图 2026-08-14 144744.png>)
+
+![事件与诊断](<screenshots/2026-08-14/屏幕截图 2026-08-14 144811.png>)
+
+### 实验报告
+
+![实验报告摘要](<screenshots/2026-08-14/屏幕截图 2026-08-14 144848.png>)
+
+![实验报告详情](<screenshots/2026-08-14/屏幕截图 2026-08-14 144854.png>)
 
 ## 核心功能
 
@@ -27,11 +37,11 @@ Three Body Lab 是一个面向本地实验的 **N 体引力数值模拟、实时
 
 | 能力 | 当前实现 |
 | --- | --- |
-| 空间维度 | 三维位置与速度；2D 仅是前端投影显示 |
+| 空间维度 | 三维位置与速度 |
 | 天体数量 | 2–20 |
 | 积分方法 | 固定时间步长的四阶 Runge-Kutta（RK4） |
 | 引力模型 | 牛顿万有引力，成对计算加速度 |
-| 近距离处理 | Plummer 软化：`(|r|² + ε²)^(-3/2)` |
+| 近距离处理 | Plummer 软化：`(‖r‖² + ε²)^(-3/2)` |
 | 结束条件 | `maxSteps`、`targetSimulationTimeSeconds`，两者同时存在时先到者生效 |
 | 近距离事件 | 两体距离小于 `5 × softeningLengthMeters` |
 | 数值防护 | 配置边界校验、有限值检查、非有限状态/指标失败诊断 |
@@ -166,7 +176,7 @@ mvn -pl simulation-launcher -am spring-boot:run
 
 默认服务地址是 <http://127.0.0.1:8721>。应用就绪后会尝试调用系统默认浏览器；在无桌面环境或系统不支持 `Desktop.BROWSE` 时，需要手动打开该地址。
 
-### 启动前端开发服务器
+### 启动前端
 
 先启动 Java 后端，然后执行：
 
@@ -197,6 +207,33 @@ VITE_API_MODE=mock npm run dev
 
 `VITE_API_MODE` 未设置时默认为 `live`。Mock 模式适合前端开发与 E2E，不应被视为 Java 后端持久化和并发语义的替代实现。
 
+### Docker 启动
+
+仓库提供单容器 Docker 方案：Vue 静态资源、REST API 和 WebSocket 一起运行在 Spring Boot 应用中，不需要 Nginx、数据库或其他外部服务。需要预先安装 Docker Engine 或 Docker Desktop，并使用 Docker Compose V2。
+
+从仓库根目录构建并启动：
+
+```bash
+docker compose up -d --build
+```
+
+启动后访问 <http://127.0.0.1:8721>。Compose 仅将端口绑定到宿主机回环地址；容器内部通过 `SERVER_ADDRESS=0.0.0.0` 监听。REST 与 WebSocket 继续使用同源的 `/api/v1` 和 `/ws/v1`，无需额外配置前端地址。
+
+查看状态和日志：
+
+```bash
+docker compose ps
+docker compose logs -f app
+```
+
+停止容器但保留实验数据：
+
+```bash
+docker compose down
+```
+
+实验数据保存在 Compose named volume `threebody-data` 中，重新创建容器后仍会恢复。只有明确需要删除全部容器数据时才使用 `docker compose down -v`。
+
 ## 构建与验证
 
 ### 完整构建
@@ -206,7 +243,7 @@ mvn clean verify
 ```
 
 构建到 `simulation-launcher` 时会在 `generate-resources` 阶段执行 `npm ci` 和 `npm run build`，随后把 `frontend/dist/` 复制到 `classpath:/static/`，并由 Spring Boot repackage 生成：
-
+生成产物：
 ```text
 simulation-launcher/target/three-body-lab.jar
 ```
@@ -217,7 +254,7 @@ simulation-launcher/target/three-body-lab.jar
 java -jar simulation-launcher/target/three-body-lab.jar
 ```
 
-### 按模块验证
+### 按模块test
 
 ```bash
 mvn -pl simulation-core -am test
@@ -225,7 +262,7 @@ mvn -pl simulation-application -am test
 mvn -pl simulation-web -am test
 ```
 
-### 前端验证
+### 前端test
 
 在 `frontend/` 目录运行：
 
@@ -260,7 +297,7 @@ npm run generate:contracts
 | WebSocket 代理 | `/ws` → `ws://127.0.0.1:8721` | `frontend/vite.config.ts` |
 | 前端数据源 | `VITE_API_MODE=live|mock`，默认 `live` | `frontend/src/main.ts` |
 
-后端只绑定本机回环地址；仓库没有 Docker、反向代理或远程部署配置。
+本地直接运行 JAR 时后端只绑定本机回环地址。Docker Compose 同样只向宿主机 `127.0.0.1:8721` 发布端口，但会通过环境变量让服务在容器内部监听 `0.0.0.0:8721`。仓库没有反向代理或远程部署配置。
 
 ### 数据目录
 
@@ -270,6 +307,7 @@ npm run generate:contracts
 | --- | --- |
 | Windows 且存在 `LOCALAPPDATA` | `%LOCALAPPDATA%\ThreeBodyLab` |
 | 其他情况 | `${user.home}/.threebody-lab` |
+| Docker Compose | named volume `threebody-data` → `/home/threebody/.threebody-lab` |
 
 当前文件布局：
 

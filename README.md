@@ -1,430 +1,361 @@
-# 三体参数实验室（Three Body Lab）
+# Three Body Lab / 三体参数实验室
 
-本地 N 体引力模拟与参数实验平台。以四阶 Runge-Kutta（RK4）积分器为核心，提供实验队列、运行状态控制、轨迹持久化、实时 WebSocket 数据推送、可视化分析和报告导出功能。同时提供 Vue 3 Web 界面和旧版 Swing 桌面界面。
+Three Body Lab 是一个面向本地实验的 **N 体引力数值模拟、实时计算与交互式可视化全栈平台**。用户可以编辑天体质量、三维位置与速度、时间步长、软化长度和结束条件，将配置提交到顺序实验队列，并通过 WebSocket 观察模拟状态、轨迹、守恒量、近距离事件与数值健康诊断。
 
-## 功能特性
+项目以纯 Java 物理核心为基础，后端由 Spring Boot 提供实验编排、文件持久化、REST API 和原生 WebSocket；前端使用 Vue 3、Canvas 2D、Three.js 与 ECharts 完成参数实验、二维/三维观察、历史回放和报告展示。生产构建会把前端静态资源打入单个可执行 JAR，不依赖数据库、缓存或消息队列。
 
-- **N 体物理模拟**：基于经典万有引力模型和软化引力（Plummer 软化），使用 RK4 方法进行数值积分，支持 2–20 个天体。
-- **内置预设**：提供 A–G 七组初始条件预设（A–D 为经典三体/多体场景），可直接加载并修改。
-- **参数编辑与校验**：支持质量、位置、速度、时间步长、引力常数、软化长度等参数的编辑，前端和后端双重校验。
-- **实验队列管理**：支持实验创建、排队、启动、暂停、继续、单步执行、重启、取消和删除，可拖拽重排队列顺序。
-- **实验状态机**：QUEUED → RUNNING → PAUSED（可恢复/单步）→ COMPLETED / CANCELLED / FAILED，状态转换由后端严格控制。
-- **实时数据推送**：通过 WebSocket 实时推送模拟快照（60 Hz）、轨迹增量（60 Hz）和物理指标（2 Hz），支持序列号去重和断线重连。
-- **三视图轨迹展示**：基于 Canvas 2D 的 XY / XZ / YZ 三投影视图，支持缩放、平移和自适应窗口，每体保留 8000 个实时轨迹点。
-- **物理指标监控**：实时计算动能、势能、总能量、能量漂移、角动量、线动量、最近两体距离等指标，通过 ECharts 图表展示。
-- **实验报告**：提供报告页面，包含轨道图、指标趋势图、事件时间线，支持浏览器打印 PDF。
-- **数据导出**：支持导出实验配置（JSON）和分层采样轨迹数据（CSV），CSV 包含 step / 时间 / 天体 ID / 名称 / 位置 / 速度。
-- **本地持久化**：实验清单和轨迹数据自动保存到本地文件系统，服务重启后可恢复，损坏文件自动隔离。
-- **Swing 桌面界面**：保留旧版 Swing 适配器，可独立运行，物理计算委托给 simulation-core。
+## 界面预览
+
+> 截图位置预留：仓库当前没有已跟踪的项目截图或演示动图，README 暂不引用外部素材。
+
+## 核心功能
+
+- **N 体参数实验**：支持 2–20 个天体，编辑质量、颜色、三维初始位置/速度、时间步长、引力常数、Plummer 软化长度、最大步数与目标模拟时间。
+- **结构化配置校验**：后端返回错误、风险级别、预计积分步数、覆盖时间、限制结束条件、初始最近天体对，以及可解释的调整建议；前端提供自动校验和风险确认。
+- **顺序实验队列**：单 worker 依次运行实验，支持排队顺序调整、暂停、继续、单步、取消、删除，以及兼容 API 中的重启操作。
+- **实时监控**：WebSocket 增量推送快照、轨迹、物理指标、数值健康、状态、近距离事件、诊断和错误消息。
+- **2D / 3D 可视化**：Canvas 2D 提供 XY / XZ / YZ 投影、缩放、平移、跟随和自适应视图；Three.js 提供空间轨迹、自由轨道相机与 XY / XZ / YZ 相机预设。
+- **历史回看与精确回放**：按步数范围读取归档轨迹，在前端时间轴回看；采样点不能精确命中时，可提交后端回放任务重算目标步。
+- **数值健康与现象解释**：跟踪能量和角动量漂移、近距离事件与数值异常，生成 GOOD / WARNING / POOR / FAILED 健康报告、诊断证据和对照实验建议。
+- **报告与导出**：报告页展示配置、指标、事件、轨迹采样与对照实验来源；支持报告数据下载、浏览器打印/PDF、配置 JSON 和轨迹 CSV 导出。
+- **离线前端模式**：MSW mock 实现预设、配置校验、实验状态、调度和 WebSocket 流程，便于不启动 Java 后端时开发前端。
+- **Swing 兼容界面**：保留独立的旧版 Swing 适配器，物理计算仍委托给 `simulation-core`。
+
+## 当前模拟能力
+
+### 数值模型
+
+| 能力 | 当前实现 |
+| --- | --- |
+| 空间维度 | 三维位置与速度；2D 仅是前端投影显示 |
+| 天体数量 | 2–20 |
+| 积分方法 | 固定时间步长的四阶 Runge-Kutta（RK4） |
+| 引力模型 | 牛顿万有引力，成对计算加速度 |
+| 近距离处理 | Plummer 软化：`(|r|² + ε²)^(-3/2)` |
+| 结束条件 | `maxSteps`、`targetSimulationTimeSeconds`，两者同时存在时先到者生效 |
+| 近距离事件 | 两体距离小于 `5 × softeningLengthMeters` |
+| 数值防护 | 配置边界校验、有限值检查、非有限状态/指标失败诊断 |
+| 单位 | 核心、REST 与 WebSocket 全部使用 SI：kg、m、m/s、s、J |
+
+每次指标采样会计算动能、软化势能、总能量、相对能量漂移、总角动量、总线动量、当前最近两体距离及对应天体。应用层在此基础上维护峰值、趋势、历史最近距离、近距离次数和数值健康建议。
+
+### 内置预设
+
+当前 `simulation-core` 提供 A–J 十组预设：
+
+| 预设 | 场景 |
+| --- | --- |
+| A | 稳定层级三星与行星系统 |
+| B | 等质量双星与外围轻质量行星 |
+| C | 等质量三体拉格朗日等边三角构型 |
+| D | 20 天体层级双星压力测试 |
+| E | 基于 J2000 状态量的太阳与八大行星三维系统 |
+| F | 地月稳定双体轨道 |
+| G | 分别位于 XY 与 XZ 平面的正交双轨道系统 |
+| H | 轨道伴星与高速穿越天体组成的三维系统 |
+| I | 非共面三体混沌近遇 |
+| J | XY / XZ / YZ 三平面正交轨道四体系统 |
+
+预设是可编辑的初始配置，不代表对长期物理稳定性的普遍保证。
+
+## 可视化与交互
+
+### Canvas 2D
+
+- XY、XZ、YZ 三种投影平面；
+- 滚轮缩放、拖拽平移、双击/按钮适应窗口；
+- 自由观察、质心跟随、指定天体跟随和自动适应；
+- 网格、标签、轨迹、悬停信息与性能 HUD；
+- 每个天体最多保留 8,000 个实时轨迹点，并使用轨迹抽稀、缓存与自适应渲染质量控制绘制成本。
+
+### Three.js 3D
+
+- WebGL 球体、辉光外观、空间轨迹与参考网格；
+- OrbitControls 自由观察；
+- FREE、XY、XZ、YZ 相机预设；
+- 透视/正交相机框架、动态包围盒适配和设备像素比控制；
+- 与 2D 视图共用同一份实时状态、轨迹缓存和历史游标。
+
+### 指标与报告
+
+ECharts 用于指标趋势展示；实验页还包含 KPI、事件时间线、数值健康卡片、现象总览和历史播放控制。报告页复用实验数据与采样说明，并通过浏览器打印能力生成 PDF。
+
+## 架构与数据流
+
+```mermaid
+flowchart LR
+    UI["Vue 参数编辑器"] -->|"POST /configs/validate"| Validation["配置校验与风险引导"]
+    Validation -->|"POST /experiments"| Queue["单 worker 实验队列"]
+    Queue --> Core["simulation-core<br/>RK4 + 软化引力 + 指标"]
+    Core --> App["simulation-application<br/>状态机、健康分析、采样与归档"]
+    App -->|"异步事件分发"| WS["WebSocket 增量消息"]
+    App -->|"REST 全量状态、历史、报告"| REST["simulation-web"]
+    WS --> Store["Pinia 状态与轨迹缓冲"]
+    REST --> Store
+    Store --> Views["Canvas 2D / Three.js 3D / ECharts / 报告"]
+    App --> Files["本地 JSON + 逐行 JSON 轨迹文件"]
+```
+
+前端把 REST 结果视为权威全量状态，WebSocket 只负责实时增量。断线或重新进入实验时先通过 REST 同步，再依据单调递增的 `sequence` 处理后续消息。
+
+模块依赖保持单向：
+
+```text
+simulation-launcher -> simulation-web -> simulation-application -> simulation-core
+simulation-launcher -> simulation-swing -> simulation-core
+```
 
 ## 技术栈
 
-| 层级 | 技术 | 版本 |
-|------|------|------|
-| **后端框架** | Spring Boot（WebMVC + WebSocket） | 4.0.7 |
-| **编程语言** | Java | 17 |
-| **构建工具** | Maven | 3.9+ |
-| **物理引擎** | 纯 Java 实现（RK4 + 软化引力） | — |
-| **序列化** | Jackson（JSON） | 由 Spring Boot 管理 |
-| **前端框架** | Vue 3 + TypeScript | 3.5.13 / ~5.7.2 |
-| **构建工具** | Vite | 6.0 |
-| **状态管理** | Pinia | 4.0 |
-| **路由** | Vue Router | 4.5 |
-| **图表** | ECharts | 6.1 |
-| **Canvas 渲染** | 原生 Canvas 2D API | — |
-| **单元测试（后端）** | JUnit 5 | 5.11.4 |
-| **单元测试（前端）** | Vitest + jsdom | 4.1 / 29.1 |
-| **端到端测试** | Playwright | 1.62 |
-| **Mock（前端）** | MSW | 2.15 |
-| **契约类型生成** | openapi-typescript + json-schema-to-typescript | 7.5 / 15.0 |
+版本取自当前 `pom.xml` 与 `frontend/package.json`：
 
-项目不依赖外部数据库、缓存或消息队列。数据通过 Jackson 序列化为 JSON 文件存储在本地文件系统。
+| 范围 | 技术 |
+| --- | --- |
+| 后端语言与构建 | Java 17、Maven 多模块 |
+| Web | Spring Boot 4.0.7、Spring Web MVC、原生 WebSocket、Bean Validation |
+| 物理与应用层 | 纯 Java RK4、Jackson、本地文件持久化 |
+| 前端 | Vue `^3.5.13`、TypeScript `~5.7.2`、Vite `^6.0.5` |
+| 状态与路由 | Pinia `^4.0.2`、Vue Router `^4.5.0` |
+| 可视化 | Canvas 2D、Three.js `^0.185.1`、ECharts `^6.1.0` |
+| 前端测试 | Vitest `^4.1.10`、jsdom `^29.1.1`、Playwright `^1.62.1` |
+| Mock 与契约生成 | MSW `^2.15.0`、openapi-typescript、json-schema-to-typescript |
+| 后端测试 | JUnit 5.11.4、Spring Boot Test |
 
 ## 项目结构
 
-```
+```text
 ThreeBody/
-├── simulation-core/            领域模型、RK4 积分、物理指标和预设（纯 Java，无框架依赖）
-│   └── src/main/java/com/threebody/core/
-│       ├── Vector3.java                三维向量
-│       ├── NBodyIntegrator.java        RK4 积分器
-│       ├── MetricsCalculator.java      物理指标计算
-│       ├── ConfigValidator.java        配置校验
-│       ├── Presets.java                A–G 预设定义
-│       ├── SimulationConfig.java       模拟配置
-│       └── BodySpec / BodyState / …    领域模型
-│
-├── simulation-application/     实验状态机、队列调度、采样策略和文件持久化
-│   └── src/main/java/com/threebody/app/
-│       ├── domain/                      实验、进度、轨迹、事件领域对象
-│       ├── service/                     ExperimentService（核心业务）、ExperimentRepository 接口
-│       ├── service/persistence/         FileExperimentRepository（JSON 文件持久化）
-│       └── event/                       异步事件分发（供 WebSocket 广播）
-│
-├── simulation-web/             REST API、WebSocket 推送、导出端点和静态资源承载
-│   └── src/main/java/com/threebody/web/
-│       ├── controller/                  ExperimentController（12 个 REST 端点）
-│       ├── websocket/                   ExperimentWebSocketHandler（原生 WebSocket）
-│       ├── config/                      AppConfig、WebSocketConfig
-│       └── dto/                         ApiError
-│
-├── simulation-swing/           旧版 Swing 桌面界面适配器（依赖 core，不依赖 Spring）
-│   └── src/main/java/com/threebody/swing/
-│       └── ThreeBodySwingAdapter.java
-│
-├── simulation-launcher/        Spring Boot 入口，打包最终可执行 JAR
-│   └── src/main/java/com/threebody/launcher/
-│       └── ThreeBodyLabApplication.java   主类，启动后自动打开浏览器
-│
-├── frontend/                   Vue 3 + TypeScript + Vite 前端
-│   ├── src/
-│   │   ├── views/              页面：LabView（主实验室）、ExperimentView（实验详情）、ReportView（报告）、NotFoundView
-│   │   ├── components/         组件：SimulationCanvas、ParameterEditor、QueuePanel、KpiCards、MetricChart
-│   │   ├── stores/             Pinia 状态：draft（草稿/校验）、experiments（队列/实时数据）、preferences（单位制/投影）
-│   │   ├── lib/                工具：apiClient、experimentSocket、configDraft、units、format、snapshotBuffer 等
-│   │   ├── mocks/              MSW Mock：mockEngine（RK4 物理模拟）、mockRepository（状态机）、mockScheduler（队列+WS）
-│   │   ├── contracts/          契约门面（类型别名、状态机辅助、中文标签）
-│   │   └── generated/          由契约自动生成的 TypeScript 类型（禁止手动修改）
-│   ├── e2e/                    Playwright 端到端测试
-│   └── scripts/                契约类型生成脚本
-│
-├── contracts/                  前后端共享契约
-│   ├── openapi.yaml            REST API 契约（OpenAPI 3.0.3）
-│   ├── ws-events.schema.json   WebSocket 消息 Schema（JSON Schema draft-07）
-│   └── examples/               示例数据（预设、实验、校验结果、WS 事件、报告）
-│
-├── docs/
-│   ├── HANDOFF.md              前后端交接文档与并行工作流记录
-│   └── plans/                  开发计划文档
-│
-├── pom.xml                     父 POM（Maven 多模块）
-└── AGENTS.md                   仓库开发指南（AI 辅助开发用）
+├── contracts/                 OpenAPI、WebSocket Schema 与协议示例
+├── frontend/                  Vue 3 前端、MSW mock、Vitest 与 Playwright
+│   ├── src/components/        2D/3D 场景、参数、队列、指标、健康与回放组件
+│   ├── src/contracts/         业务代码使用的契约类型门面
+│   ├── src/generated/         由契约生成的 TypeScript 类型
+│   ├── src/mocks/             浏览器内 mock 运行时
+│   ├── src/stores/            Pinia 草稿、实验与偏好状态
+│   ├── src/views/             实验室、实验详情、报告与 404 页面
+│   └── e2e/                   Playwright 用户流程
+├── simulation-core/           领域模型、配置校验、预设、RK4 与物理指标
+├── simulation-application/    实验队列、状态机、诊断、回放与文件仓库
+├── simulation-web/            REST、WebSocket、DTO 与 Spring 配置
+├── simulation-swing/          旧 Swing UI 适配器
+├── simulation-launcher/       Spring Boot 入口与最终可执行 JAR 打包
+├── docs/                      交接记录和前后端计划
+└── pom.xml                    Maven 父工程
 ```
 
-**模块依赖方向：**
+`contracts/openapi.yaml` 与 `contracts/ws-events.schema.json` 是前后端共享协议的事实来源。前端业务代码通过 `frontend/src/contracts/index.ts` 导入类型，不直接依赖手写协议定义。
 
-```
-simulation-core
-       ↓
-simulation-application
-       ↓
-simulation-web ──────┐
-                     ├─→ simulation-launcher（最终 JAR）
-simulation-swing ────┘
-```
+## 本地开发
 
-## 环境要求
+### 环境要求
 
-| 软件 | 最低版本 | 说明 |
-|------|----------|------|
-| JDK | 17 | 项目 `maven.compiler.release` 设置为 17 |
-| Maven | 3.9+ | 多模块构建 |
-| Node.js | 20+ | 前端构建和完整打包时需要 |
-| npm | 10+ | 随 Node.js 20 提供 |
+- **JDK 17**：父 POM 明确设置 `maven.compiler.release=17`。
+- **Maven**：用于多模块构建；仓库没有 Maven Wrapper，也没有声明最低 Maven 版本。
+- **Node.js 与 npm**：用于前端开发和包含前端的完整打包；仓库提供 lockfile v3，但没有通过 `engines`、`.nvmrc` 等文件声明最低 Node.js/npm 版本。
+- 支持 WebGL 的现代浏览器：使用 3D 场景时需要。
 
-> **注意**：如果只运行已构建好的 JAR 文件（`three-body-lab.jar`），仅需 JDK 17，不需要 Node.js 和 Maven。
+仅运行已经构建好的 JAR 时不需要 Maven、Node.js、数据库或其他外部服务。
 
-## 快速开始
+### 启动后端与集成应用
 
-### 1. 克隆项目
-
-```bash
-git clone <仓库地址>
-cd ThreeBody
-```
-
-### 2. 完整构建
-
-在仓库根目录执行：
-
-```bash
-mvn clean verify
-```
-
-此命令会依次：编译全部 Java 模块 → 运行后端单元测试 → 安装前端依赖（`npm ci`）→ 构建前端 → 将前端产物打包进 JAR。
-
-### 3. 启动服务
-
-```bash
-java -jar simulation-launcher/target/three-body-lab.jar
-```
-
-服务启动后会自动打开默认浏览器访问 `http://127.0.0.1:8721`。
-
-也可以使用 Maven 直接启动（开发模式）：
+从仓库根目录运行：
 
 ```bash
 mvn -pl simulation-launcher -am spring-boot:run
 ```
 
-### 4. 前端独立开发
+默认服务地址是 <http://127.0.0.1:8721>。应用就绪后会尝试调用系统默认浏览器；在无桌面环境或系统不支持 `Desktop.BROWSE` 时，需要手动打开该地址。
 
-如果需要前后端分离开发：
+### 启动前端开发服务器
+
+先启动 Java 后端，然后执行：
 
 ```bash
 cd frontend
-npm install
-npm run dev          # 启动 Vite 开发服务器（端口 5173）
+npm ci
+npm run dev
 ```
 
-开发服务器会将 `/api` 和 `/ws` 请求代理到本地 Java 后端（`127.0.0.1:8721`）。
+Vite 默认监听 `http://localhost:5173`，并将 `/api` 与 `/ws` 代理到 `127.0.0.1:8721`。
 
-如果后端尚未就绪，可使用 Mock 模式独立运行前端：
+### 前端 Mock 模式
+
+PowerShell：
+
+```powershell
+cd frontend
+$env:VITE_API_MODE = 'mock'
+npm run dev
+```
+
+Bash：
 
 ```bash
-# Windows PowerShell
-$env:VITE_API_MODE="mock"
-npm run dev
-
-# Linux / macOS / Git Bash
+cd frontend
 VITE_API_MODE=mock npm run dev
 ```
 
-Mock 模式在浏览器内运行完整的 RK4 物理引擎模拟、实验状态机和 WebSocket 广播，无需后端即可体验完整功能。
+`VITE_API_MODE` 未设置时默认为 `live`。Mock 模式适合前端开发与 E2E，不应被视为 Java 后端持久化和并发语义的替代实现。
 
-## 配置说明
+## 构建与验证
 
-### 后端配置
-
-`simulation-launcher/src/main/resources/application.yml`：
-
-```yaml
-spring:
-  application:
-    name: three-body-lab
-
-server:
-  port: 8721          # 服务端口
-  address: 127.0.0.1  # 仅监听本机，不对外暴露
-```
-
-服务仅绑定 `127.0.0.1`，不提供外部访问。如需修改端口或监听地址，编辑此文件后重新构建。
-
-### 前端配置
-
-`frontend/vite.config.ts` 中的关键配置：
-
-- **开发服务器端口**：`5173`
-- **API 代理**：`/api` → `http://127.0.0.1:8721`
-- **WebSocket 代理**：`/ws` → `ws://127.0.0.1:8721`
-- **Mock 模式**：通过环境变量 `VITE_API_MODE=mock` 启用，不依赖后端
-
-### 本地数据目录
-
-实验清单和轨迹数据默认保存在：
-
-| 平台 | 路径 |
-|------|------|
-| Windows | `%LOCALAPPDATA%\ThreeBodyLab` |
-| Linux / macOS | `~/.threebody-lab` |
-
-数据目录结构：
-
-```
-ThreeBodyLab/
-├── experiments.json       # 实验清单
-├── <experiment-id>.json   # 各实验的完整数据（状态、事件、轨迹元信息）
-├── <experiment-id>.csv    # 分层采样轨迹（长表格式）
-└── .corrupted/            # 损坏文件的隔离目录
-```
-
-损坏的实验清单会被自动移动到 `.corrupted/` 目录，避免阻止服务启动。
-
-## API 概览
-
-REST API 统一使用 `/api/v1` 前缀，全部端点见 [`contracts/openapi.yaml`](contracts/openapi.yaml)。
-
-### 主要模块
-
-| 模块 | 端点 | 说明 |
-|------|------|------|
-| **预设** | `GET /api/v1/presets` | 获取 A–G 内置预设 |
-| **校验** | `POST /api/v1/configs/validate` | 校验模拟参数（始终返回 200，通过 `valid` 字段判断） |
-| **实验 CRUD** | `GET/POST /api/v1/experiments` | 列出 / 创建实验 |
-| | `GET/PUT/DELETE /api/v1/experiments/{id}` | 查看 / 编辑 / 删除实验 |
-| **实验控制** | `POST /api/v1/experiments/{id}/actions` | 执行 PAUSE / RESUME / STEP / RESTART / CANCEL |
-| **队列** | `PATCH /api/v1/queue` | 重排实验队列 |
-| **导出** | `GET /api/v1/experiments/{id}/exports/config` | 导出配置 JSON |
-| | `GET /api/v1/experiments/{id}/exports/trajectory` | 导出轨迹 CSV（含 X-Sample-Stride 响应头） |
-| **报告** | `GET /api/v1/experiments/{id}/report-data` | 获取报告聚合数据 |
-
-### WebSocket
-
-```
-ws://127.0.0.1:8721/ws/v1/experiments/{id}
-```
-
-推送消息类型：
-
-| 类型 | 频率 | 说明 |
-|------|------|------|
-| `SNAPSHOT` | 最高 60 Hz | 当前步天体位置和速度 |
-| `TRAJECTORY` | 最高 60 Hz | 新增轨迹采样点（增量） |
-| `METRICS` | 2 Hz | 物理守恒量指标 |
-| `STATUS` | 按事件 | 实验状态变更 |
-| `NEAR_ENCOUNTER` | 按事件 | 两体近距离事件（< 5 倍软化长度） |
-| `ERROR` | 按事件 | 数值异常或内部错误 |
-
-每条消息包含单调递增的 `sequence` 字段，客户端据此丢弃重复和乱序消息。重连后应先调用 `GET /api/v1/experiments/{id}` 获取全量状态，再接收 `sequence` 更大的增量消息。
-
-### 数值单位
-
-接口和 WebSocket 中的数值统一使用 **SI 单位**：
-
-| 物理量 | 单位 |
-|--------|------|
-| 质量 | kg |
-| 长度 / 位置 | m |
-| 速度 | m/s |
-| 时间 | s |
-| 能量 | J |
-
-前端提供 SI ↔ 太阳质量 / AU / km/s / 年 的双向单位转换，但接口层始终使用 SI。
-
-## 开发说明
-
-### 后端开发
-
-对单个模块运行测试：
+### 完整构建
 
 ```bash
-mvn -pl simulation-core test
-mvn -pl simulation-application test
+mvn clean verify
 ```
 
-运行全部测试：
+构建到 `simulation-launcher` 时会在 `generate-resources` 阶段执行 `npm ci` 和 `npm run build`，随后把 `frontend/dist/` 复制到 `classpath:/static/`，并由 Spring Boot repackage 生成：
 
-```bash
-mvn test
+```text
+simulation-launcher/target/three-body-lab.jar
 ```
 
-### 前端开发
+运行产物：
 
 ```bash
-cd frontend
+java -jar simulation-launcher/target/three-body-lab.jar
+```
 
-# 类型检查
-npx vue-tsc -b
+### 按模块验证
 
-# 单元测试
+```bash
+mvn -pl simulation-core -am test
+mvn -pl simulation-application -am test
+mvn -pl simulation-web -am test
+```
+
+### 前端验证
+
+在 `frontend/` 目录运行：
+
+```bash
 npm test
-
-# 单元测试（监听模式）
-npm run test:watch
-
-# E2E 测试（需要先启动 dev server）
+npm run build
 npm run test:e2e
-
-# 完整验证（契约生成 + 类型检查 + 单元测试 + 构建 + E2E）
 npm run verify
 ```
 
-> **E2E 测试说明**：Playwright 配置在 `playwright.config.ts` 中，使用独立端口 4173，测试期间强制 Mock 模式（`VITE_API_MODE=mock`），不需要后端服务。
+`npm run verify` 依次生成契约类型、执行 TypeScript 检查、Vitest、生产构建和 Playwright。项目当前没有独立 lint 脚本。
 
-### 契约变更
-
-修改 `contracts/` 下的文件后，重新生成前端类型：
+修改 `contracts/` 后重新生成前端类型：
 
 ```bash
 cd frontend
 npm run generate:contracts
 ```
 
-此命令读取 `contracts/openapi.yaml` 和 `contracts/ws-events.schema.json`，生成 `frontend/src/generated/openapi.ts` 和 `frontend/src/generated/ws-events.ts`。
+不要手工编辑 `frontend/src/generated/`。
 
-### 前后端联调
+## 配置与本地数据
 
-1. 启动后端：`mvn -pl simulation-launcher -am spring-boot:run`
-2. 启动前端（Live 模式）：`cd frontend && npm run dev`
-3. 访问 `http://localhost:5173`，API 请求自动代理到后端
+### 服务与开发代理
 
-### 跨域
+| 配置 | 当前值 | 来源 |
+| --- | --- | --- |
+| 后端监听地址 | `127.0.0.1` | `simulation-launcher/src/main/resources/application.yml` |
+| 后端端口 | `8721` | 同上 |
+| Vite 开发端口 | `5173` | `frontend/vite.config.ts` |
+| REST 代理 | `/api` → `http://127.0.0.1:8721` | `frontend/vite.config.ts` |
+| WebSocket 代理 | `/ws` → `ws://127.0.0.1:8721` | `frontend/vite.config.ts` |
+| 前端数据源 | `VITE_API_MODE=live|mock`，默认 `live` | `frontend/src/main.ts` |
 
-开发期 Vite 通过代理避免跨域。生产环境前端静态资源打包在 JAR 内，与后端同源，不存在跨域问题。后端不启用开放 CORS。
+后端只绑定本机回环地址；仓库没有 Docker、反向代理或远程部署配置。
 
-### 数据持久化
+### 数据目录
 
-- 使用 Jackson JSON 序列化到本地文件，不依赖外部数据库。
-- 写入采用原子操作（先写临时文件再重命名）。
-- 实验状态变更、事件追加、轨迹采样均实时写入。
-- 损坏的文件被隔离到 `.corrupted/` 目录，不影响其他实验。
+文件仓库按以下规则选择目录：
 
-## 测试
+| 环境 | 目录 |
+| --- | --- |
+| Windows 且存在 `LOCALAPPDATA` | `%LOCALAPPDATA%\ThreeBodyLab` |
+| 其他情况 | `${user.home}/.threebody-lab` |
 
-| 层级 | 工具 | 位置 | 数量 |
-|------|------|------|------|
-| Java 单元测试 | JUnit 5 | 各模块 `src/test/java/` | 12 个测试文件 |
-| 前端单元测试 | Vitest | `frontend/src/**/__tests__/` | 13 个测试文件 |
-| 端到端测试 | Playwright | `frontend/e2e/` | 1 个测试文件 |
+当前文件布局：
 
-运行全部测试：
-
-```bash
-# 后端
-mvn test
-
-# 前端
-cd frontend && npm test && npm run test:e2e
+```text
+<data-dir>/
+├── experiments.json                 实验清单与元数据
+├── trajectory-<experiment-id>.json  逐行写入的 JSON 轨迹归档
+└── .corrupted/                      损坏 experiments.json 的隔离目录
 ```
 
-## 构建与部署
+实验清单通过临时文件和原子替换写入；轨迹由后台归档线程批量追加，避免在积分热路径同步执行磁盘序列化。删除实验会同时删除对应轨迹文件。
 
-### 构建可执行 JAR
+## 基本使用流程
 
-```bash
-mvn clean package
+1. 从 A–J 预设选择起点，或手动编辑 2–20 个天体的 SI 参数。
+2. 查看服务端配置摘要、风险证据和建议；必要时应用建议或确认风险。
+3. 创建实验。实验进入单 worker 队列并按顺序运行。
+4. 在 2D 或 3D 场景中观察状态、轨迹、KPI、趋势、事件与数值健康。
+5. 暂停后单步检查，或使用历史时间轴定位近距离/诊断事件；需要时请求精确回放。
+6. 对 WARNING / POOR / FAILED 结果创建带来源关系的对照实验，比较时间步长调整前后的健康状态。
+7. 在报告页检查采样说明和来源差异，并导出配置、轨迹或报告数据。
+
+## REST API 与 WebSocket
+
+OpenAPI 版本为 **1.1.0**，REST 基础地址为 `http://127.0.0.1:8721/api/v1`。完整定义见 [`contracts/openapi.yaml`](contracts/openapi.yaml)。
+
+| 范围 | 方法与路径 | 用途 |
+| --- | --- | --- |
+| 预设 | `GET /presets` | 获取 A–J 内置预设 |
+| 校验 | `POST /configs/validate` | 获取校验结果、配置摘要与风险引导 |
+| 实验 | `GET/POST /experiments` | 列表与创建 |
+| 实验 | `GET/PUT/DELETE /experiments/{id}` | 详情、编辑排队配置、删除 |
+| 控制 | `POST /experiments/{id}/actions` | PAUSE / RESUME / STEP / RESTART / CANCEL |
+| 队列 | `PATCH /queue` | 提交完整实验 ID 顺序 |
+| 导出 | `GET /experiments/{id}/exports/config` | 配置 JSON |
+| 导出 | `GET /experiments/{id}/exports/trajectory` | 分层采样轨迹 CSV |
+| 报告 | `GET /experiments/{id}/report-data` | 报告聚合数据 |
+| 历史 | `GET /experiments/{id}/history` | 按步数范围读取归档切片 |
+| 回放 | `POST /experiments/{id}/replay-jobs` | 创建精确回放任务 |
+| 回放 | `GET/DELETE /experiments/{id}/replay-jobs/{jobId}` | 查询或取消回放任务 |
+
+WebSocket 地址：
+
+```text
+ws://127.0.0.1:8721/ws/v1/experiments/{id}
 ```
 
-产物路径：`simulation-launcher/target/three-body-lab.jar`
+消息契约版本为 **1.1**，完整 Schema 见 [`contracts/ws-events.schema.json`](contracts/ws-events.schema.json)。
 
-Maven 打包 `simulation-launcher` 时会自动执行：
-1. `npm ci` — 安装前端依赖
-2. `npm run build` — 构建前端（类型检查 + Vite 生产构建）
-3. 复制 `frontend/dist/` 到 `classpath:/static/`
-4. Spring Boot repackage — 生成包含所有依赖和前端资源的 fat JAR
+| 消息 | 发布方式 | 内容 |
+| --- | --- | --- |
+| `SNAPSHOT` | 最高 60 Hz | 当前步、模拟时间、位置和速度 |
+| `TRAJECTORY` | 最高 60 Hz | 轨迹增量与采样步长 |
+| `METRICS` | 最高 2 Hz | 能量、动量、最近距离和运行速率 |
+| `HEALTH` | 健康状态更新 | 权威数值健康报告 |
+| `STATUS` | 状态变化 | 状态、进度、结束原因和队列位置 |
+| `NEAR_ENCOUNTER` | 事件驱动 | 近距离事件生命周期与证据 |
+| `DIAGNOSTIC` | 事件驱动 | 漂移、逃逸、偏转、解体或数值不稳定诊断 |
+| `ERROR` | 错误发生时 | 非有限状态、非有限指标等错误 |
 
-### 运行
+每个消息信封包含 `schemaVersion`、`experimentId`、单调递增的 `sequence`、时间戳和 payload。
 
-```bash
-java -jar simulation-launcher/target/three-body-lab.jar
-```
+## 性能与稳定性设计
 
-服务启动后自动打开浏览器访问 `http://127.0.0.1:8721`。
+- **确定的并发模型**：实验由单 worker 顺序计算，同一时刻至多一个 RUNNING 实验，避免多个实验争用和状态转换竞态。
+- **计算与推送解耦**：应用层异步分发事件；每个 WebSocket 会话拥有容量受限的发送 mailbox，慢客户端不会阻塞积分线程。
+- **按语义处理背压**：高频快照类消息优先保留最新值，状态、近距离、诊断和错误消息保持可靠有序语义。
+- **墙钟发布上限**：快照与轨迹最高 60 Hz、指标最高 2 Hz，发布频率与模拟 steps/s 分离。
+- **有界内存与归档**：每体实时窗口上限 8,000 点；归档目标上限 50,000 个状态，超过后采用分层采样；事件列表上限 1,000 条。
+- **后台批量写入**：轨迹归档按批次或时间间隔刷新，磁盘压缩和序列化不进入物理步进热路径。
+- **恢复与隔离**：服务启动加载实验清单；损坏清单移入 `.corrupted/`，避免阻断其他数据初始化。
+- **前端渲染控制**：快照插值、轨迹缓冲、抽稀、分层 Canvas、可见性检测、动态 DPR 与 3D 资源释放共同限制实时渲染成本。
 
-### 运行环境
+## 当前状态与 Roadmap
 
-- **开发 / 构建**：需要 JDK 17 + Maven 3.9+ + Node.js 20+
-- **仅运行 JAR**：只需 JDK 17
-- **不需要**：数据库、Redis、Nginx、Docker 或任何外部服务
+当前代码已经覆盖“参数校验 → 排队计算 → 实时传输 → 2D/3D 观察 → 健康诊断 → 历史回放 → 报告/导出 → 对照实验”的本地闭环，REST/OpenAPI 与 WebSocket Schema 已演进到 1.1 系列。项目仍以本地单用户实验室为定位，没有数据库、用户系统或远程部署层。
 
-本项目当前未配置 Docker 部署方案。
+以下后续项仅摘自仓库现有进度/交接文档：
 
-## 常见问题
+- 补充真实前后端联调中的 WebSocket 乱序、断线重连、恢复和失败任务验证；
+- 完善 Canvas/WebGL 单测环境，并修正依赖固定画布命中的 tooltip E2E 用例；
+- 增加专门的 Health / 创建对照实验 E2E，覆盖新实验 ID、来源保留和建议步长预填；
+- 若后续引入 Compare 页面，复用现有 `healthStatus`、完整健康报告和对照实验来源数据。
 
-### 1. 启动 JAR 后浏览器没有自动打开
-
-服务仅监听 `127.0.0.1:8721`，手动访问 `http://127.0.0.1:8721` 即可。如果在无桌面环境的服务器上运行，`java.awt.Desktop` 不可用，自动打开浏览器功能会静默失败。
-
-### 2. 前端 `npm run dev` 后 API 请求报 404
-
-确认后端服务已在 `127.0.0.1:8721` 启动。或者使用 Mock 模式：`VITE_API_MODE=mock npm run dev`。
-
-### 3. Maven 构建失败，提示找不到 Node.js 或 npm
-
-`simulation-launcher` 模块构建时会调用 `npm ci` 和 `npm run build`，需要 Node.js 20+。如果只想构建 Java 模块（不打包前端），可以跳过 launcher：
-
-```bash
-mvn -pl simulation-core,simulation-application,simulation-web,simulation-swing clean verify
-```
-
-### 4. 实验数据丢失
-
-检查本地数据目录（Windows：`%LOCALAPPDATA%\ThreeBodyLab`，其他系统：`~/.threebody-lab`）。如果 `experiments.json` 损坏，它会被移到 `.corrupted/` 子目录，可以从该目录尝试手动恢复。
-
-### 5. WebSocket 连接频繁断开又重连
-
-WebSocket 客户端实现了指数退避重连策略。如果持续断开，检查是否有防火墙或代理拦截 WebSocket 流量。开发模式下确认 Vite 代理配置中 `/ws` 的 target 为 `ws://127.0.0.1:8721`。
+这些条目是已记录的后续方向，不表示已经实现或承诺具体发布时间。
 
 ## License
 
-暂未指定 License。
+仓库当前没有 `LICENSE` 或 `COPYING` 文件，也未在构建配置中声明项目许可证。使用、修改或分发前请先向项目维护者确认授权范围。

@@ -660,7 +660,7 @@ onUnmounted(() => {
         </article>
 
         <EventPanel
-          v-show="!sceneExpanded"
+          v-if="!sceneExpanded"
           class="lab-event-panel"
           :events="experimentsStore.events"
           :selected-event-id="experimentsStore.selectedEventId"

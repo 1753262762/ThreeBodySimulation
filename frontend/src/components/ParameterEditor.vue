@@ -2,15 +2,19 @@
 import { computed, ref } from 'vue'
 import { useDraftStore } from '../stores/draft'
 import { MAX_BODY_COUNT, MIN_BODY_COUNT } from '../contracts'
+import { createBodyDraft, type BodyDraft } from '../lib/configDraft'
 import { fromSi, unitLabel } from '../lib/units'
 import { getParameterHelp } from '../lib/parameterHelp'
 import { formatScientific, formatSimulationTime } from '../lib/format'
 import AppTooltip from './AppTooltip.vue'
 import ParameterHelpBlock from './ParameterHelpBlock.vue'
 import ValidationGuidanceCard from './ValidationGuidanceCard.vue'
+import BodyEditorDialog from './BodyEditorDialog.vue'
 
 const draftStore = useDraftStore()
-const expandedRow = ref<string | null>(null)
+const bodyEditorOpen = ref(false)
+const bodyEditorMode = ref<'add' | 'edit'>('edit')
+const bodyEditorBody = ref<BodyDraft | null>(null)
 const showImport = ref(false)
 const importText = ref('')
 const importError = ref('')
@@ -45,39 +49,6 @@ function fieldWarnings(field: string): string[] {
   return fieldWarningIssues(field).filter((item) => !item.guidance).map((item) => item.message)
 }
 
-/** 聚合路径如 bodies[2].position 映射到该组所有坐标输入并在组下展示。 */
-function groupError(prefix: string): string | undefined {
-  for (const [field, items] of issuesByField.value) {
-    if (field === prefix || field.startsWith(`${prefix}.`) || field.startsWith(`${prefix}[`)) {
-      const error = items.find((item) => item.severity === 'ERROR')
-      if (error) return error.message
-    }
-  }
-  return undefined
-}
-
-function groupWarnings(prefix: string): string[] {
-  const result: string[] = []
-  for (const [field, items] of issuesByField.value) {
-    if (field === prefix || field.startsWith(`${prefix}.`) || field.startsWith(`${prefix}[`)) {
-      for (const item of items) {
-        if (item.severity === 'WARNING' && !item.guidance) result.push(item.message)
-      }
-    }
-  }
-  return result
-}
-
-function groupWarningIssues(prefix: string) {
-  const result = [] as ReturnType<typeof fieldWarningIssues>
-  for (const [field, items] of issuesByField.value) {
-    if (field === prefix || field.startsWith(`${prefix}.`) || field.startsWith(`${prefix}[`)) {
-      result.push(...items.filter((item) => item.severity === 'WARNING' && item.guidance))
-    }
-  }
-  return result
-}
-
 const configSummary = computed(() => draftStore.serverValidation?.configSummary ?? null)
 const normalizedBodies = computed(() => draftStore.serverValidation?.normalizedConfig?.bodies ?? [])
 
@@ -85,13 +56,32 @@ function bodyNames(ids: string[]): string {
   return ids.map((id) => normalizedBodies.value.find((body) => body.id === id)?.name ?? id).join(' 与 ')
 }
 
-function bodyField(body: { rowId: string }, suffix: string): string {
-  const index = draft.value.bodies.findIndex((item) => item.rowId === body.rowId)
-  return `bodies[${Math.max(0, index)}].${suffix}`
+function openBodyEditor(body: BodyDraft): void {
+  bodyEditorMode.value = 'edit'
+  bodyEditorBody.value = body
+  bodyEditorOpen.value = true
 }
 
-function toggleExpand(rowId: string): void {
-  expandedRow.value = expandedRow.value === rowId ? null : rowId
+function openBodyCreator(): void {
+  if (draft.value.bodies.length >= MAX_BODY_COUNT) return
+  bodyEditorMode.value = 'add'
+  bodyEditorBody.value = createBodyDraft(draft.value.bodies.length)
+  bodyEditorOpen.value = true
+}
+
+function closeBodyEditor(): void {
+  bodyEditorOpen.value = false
+  bodyEditorBody.value = null
+}
+
+function saveBody(body: BodyDraft): void {
+  if (bodyEditorMode.value === 'add') {
+    if (draft.value.bodies.length < MAX_BODY_COUNT) draft.value.bodies.push(body)
+  } else {
+    const index = draft.value.bodies.findIndex((item) => item.rowId === body.rowId)
+    if (index >= 0) draft.value.bodies.splice(index, 1, body)
+  }
+  closeBodyEditor()
 }
 
 function doImport(): void {
@@ -150,9 +140,11 @@ function doExport(): void {
         <AppTooltip :title="'时间步长'" :text="`${help.timeStep.meaning}${help.timeStep.impact}${help.timeStep.range}`">
           <label for="time-step">时间步长</label>
         </AppTooltip>
-        <input id="time-step" v-model="draft.timeStep" />
-        <small class="param-unit">{{ unitLabel('time', unitSystem) }}</small>
-        <ParameterHelpBlock :help="help.timeStep" />
+        <div class="input-with-unit">
+          <input id="time-step" v-model="draft.timeStep" aria-describedby="time-step-unit" />
+          <small id="time-step-unit" class="input-unit">{{ unitLabel('time', unitSystem) }}</small>
+        </div>
+        <ParameterHelpBlock title="时间步长" :help="help.timeStep" />
         <small v-if="fieldError('timeStepSeconds')" class="field-error">{{ fieldError('timeStepSeconds') }}</small>
         <ValidationGuidanceCard
           v-for="issue in fieldWarningIssues('timeStepSeconds')"
@@ -166,9 +158,11 @@ function doExport(): void {
         <AppTooltip :title="'引力常数'" :text="`${help.gravitationalConstant.meaning}${help.gravitationalConstant.impact}${help.gravitationalConstant.range}`">
           <label for="grav-const">引力常数</label>
         </AppTooltip>
-        <input id="grav-const" v-model="draft.gravitationalConstant" />
-        <small>N·m²/kg²</small>
-        <ParameterHelpBlock :help="help.gravitationalConstant" />
+        <div class="input-with-unit input-with-unit-wide">
+          <input id="grav-const" v-model="draft.gravitationalConstant" aria-describedby="grav-const-unit" />
+          <small id="grav-const-unit" class="input-unit">N·m²/kg²</small>
+        </div>
+        <ParameterHelpBlock title="引力常数" :help="help.gravitationalConstant" />
         <small v-if="fieldError('gravitationalConstant')" class="field-error">{{ fieldError('gravitationalConstant') }}</small>
         <small v-for="(message, i) in fieldWarnings('gravitationalConstant')" :key="`w-${i}`" class="field-warning">{{ message }}</small>
       </div>
@@ -178,9 +172,11 @@ function doExport(): void {
       <AppTooltip :title="'软化长度'" :text="`${help.softeningLength.meaning}${help.softeningLength.impact}${help.softeningLength.range}`">
         <label for="softening">软化长度</label>
       </AppTooltip>
-      <input id="softening" v-model="draft.softeningLength" />
-      <small class="param-unit">{{ unitLabel('length', unitSystem) }}</small>
-      <ParameterHelpBlock :help="help.softeningLength" />
+      <div class="input-with-unit">
+        <input id="softening" v-model="draft.softeningLength" aria-describedby="softening-unit" />
+        <small id="softening-unit" class="input-unit">{{ unitLabel('length', unitSystem) }}</small>
+      </div>
+      <ParameterHelpBlock title="软化长度" :help="help.softeningLength" />
       <small v-if="fieldError('softeningLengthMeters')" class="field-error">{{ fieldError('softeningLengthMeters') }}</small>
       <ValidationGuidanceCard
         v-for="issue in fieldWarningIssues('softeningLengthMeters')"
@@ -195,7 +191,7 @@ function doExport(): void {
       <header>
         <span>天体参数（{{ draft.bodies.length }}/{{ MAX_BODY_COUNT }}）</span>
         <div>
-          <button type="button" @click="draftStore.addBody()" :disabled="draft.bodies.length >= MAX_BODY_COUNT">＋ 添加</button>
+          <button type="button" @click="openBodyCreator" :disabled="draft.bodies.length >= MAX_BODY_COUNT">＋ 添加</button>
           <button type="button" @click="showImport = !showImport">导入</button>
           <button type="button" @click="doExport">导出</button>
         </div>
@@ -218,8 +214,8 @@ function doExport(): void {
             <span>{{ body.mass }} {{ unitLabel('mass', unitSystem) }}</span>
           </div>
           <div class="body-actions">
-            <AppTooltip :text="expandedRow === body.rowId ? '收起天体编辑' : '编辑天体参数'" :focusable="false">
-              <button type="button" :aria-label="expandedRow === body.rowId ? '收起天体编辑' : '编辑天体参数'" :aria-expanded="expandedRow === body.rowId" @click="toggleExpand(body.rowId)">✎</button>
+            <AppTooltip text="编辑天体参数" :focusable="false">
+              <button type="button" aria-label="编辑天体参数" :aria-expanded="bodyEditorOpen && bodyEditorBody?.rowId === body.rowId" @click="openBodyEditor(body)">✎</button>
             </AppTooltip>
             <AppTooltip text="复制天体" :focusable="true">
               <button type="button" aria-label="复制天体" @click="draftStore.duplicateBody(body.rowId)" :disabled="draft.bodies.length >= MAX_BODY_COUNT">⧉</button>
@@ -231,88 +227,6 @@ function doExport(): void {
         </div>
       </div>
 
-      <div v-if="expandedRow" class="body-editor">
-        <template v-for="body in draft.bodies" :key="body.rowId">
-          <template v-if="body.rowId === expandedRow">
-            <div class="body-editor-header">
-              <input type="color" v-model="body.color" />
-              <input type="text" v-model="body.name" :placeholder="`天体 ${draft.bodies.indexOf(body) + 1} 名称`" />
-            </div>
-            <small v-if="fieldError(bodyField(body, 'name'))" class="field-error">{{ fieldError(bodyField(body, 'name')) }}</small>
-            <div class="coord-grid">
-              <div class="field" :class="{ 'is-error': fieldError(bodyField(body, 'massKg')) }">
-                <AppTooltip :title="'天体质量'" :text="`${help.mass.meaning}${help.mass.impact}${help.mass.range}`">
-                  <label>质量</label>
-                </AppTooltip>
-                <input v-model="body.mass" />
-                <small class="param-unit">{{ unitLabel('mass', unitSystem) }}</small>
-                <ParameterHelpBlock :help="help.mass" />
-                <small v-if="fieldError(bodyField(body, 'massKg'))" class="field-error">{{ fieldError(bodyField(body, 'massKg')) }}</small>
-              </div>
-            </div>
-            <div class="param-group-title">
-              <AppTooltip :title="'初始位置'" :text="`${help.position.meaning}${help.position.impact}${help.position.range}`">
-                <span>初始位置</span>
-              </AppTooltip>
-              <small class="param-unit">{{ unitLabel('length', unitSystem) }}</small>
-            </div>
-            <ParameterHelpBlock :help="help.position" />
-            <small v-if="groupError(bodyField(body, 'position'))" class="field-error">{{ groupError(bodyField(body, 'position')) }}</small>
-            <small v-for="(message, i) in groupWarnings(bodyField(body, 'position'))" :key="`pw-${i}`" class="field-warning">{{ message }}</small>
-            <ValidationGuidanceCard
-              v-for="issue in groupWarningIssues(bodyField(body, 'position'))"
-              :key="issue.code"
-              :issue="issue"
-              compact
-              @apply="draftStore.applyGuidanceAction"
-            />
-            <div class="coord-grid">
-              <div class="field" :class="{ 'is-error': fieldError(bodyField(body, 'position.x')) }">
-                <label>x</label><input v-model="body.positionX" />
-                <small v-if="fieldError(bodyField(body, 'position.x'))" class="field-error">{{ fieldError(bodyField(body, 'position.x')) }}</small>
-              </div>
-              <div class="field" :class="{ 'is-error': fieldError(bodyField(body, 'position.y')) }">
-                <label>y</label><input v-model="body.positionY" />
-                <small v-if="fieldError(bodyField(body, 'position.y'))" class="field-error">{{ fieldError(bodyField(body, 'position.y')) }}</small>
-              </div>
-              <div class="field" :class="{ 'is-error': fieldError(bodyField(body, 'position.z')) }">
-                <label>z</label><input v-model="body.positionZ" />
-                <small v-if="fieldError(bodyField(body, 'position.z'))" class="field-error">{{ fieldError(bodyField(body, 'position.z')) }}</small>
-              </div>
-            </div>
-            <div class="param-group-title">
-              <AppTooltip :title="'初始速度'" :text="`${help.velocity.meaning}${help.velocity.impact}${help.velocity.range}`">
-                <span>初始速度</span>
-              </AppTooltip>
-              <small class="param-unit">{{ unitLabel('velocity', unitSystem) }}</small>
-            </div>
-            <ParameterHelpBlock :help="help.velocity" />
-            <small v-if="groupError(bodyField(body, 'velocity'))" class="field-error">{{ groupError(bodyField(body, 'velocity')) }}</small>
-            <small v-for="(message, i) in groupWarnings(bodyField(body, 'velocity'))" :key="`vw-${i}`" class="field-warning">{{ message }}</small>
-            <ValidationGuidanceCard
-              v-for="issue in groupWarningIssues(bodyField(body, 'velocity'))"
-              :key="issue.code"
-              :issue="issue"
-              compact
-              @apply="draftStore.applyGuidanceAction"
-            />
-            <div class="coord-grid">
-              <div class="field" :class="{ 'is-error': fieldError(bodyField(body, 'velocity.x')) }">
-                <label>vx</label><input v-model="body.velocityX" />
-                <small v-if="fieldError(bodyField(body, 'velocity.x'))" class="field-error">{{ fieldError(bodyField(body, 'velocity.x')) }}</small>
-              </div>
-              <div class="field" :class="{ 'is-error': fieldError(bodyField(body, 'velocity.y')) }">
-                <label>vy</label><input v-model="body.velocityY" />
-                <small v-if="fieldError(bodyField(body, 'velocity.y'))" class="field-error">{{ fieldError(bodyField(body, 'velocity.y')) }}</small>
-              </div>
-              <div class="field" :class="{ 'is-error': fieldError(bodyField(body, 'velocity.z')) }">
-                <label>vz</label><input v-model="body.velocityZ" />
-                <small v-if="fieldError(bodyField(body, 'velocity.z'))" class="field-error">{{ fieldError(bodyField(body, 'velocity.z')) }}</small>
-              </div>
-            </div>
-          </template>
-        </template>
-      </div>
     </div>
 
     <div class="parameter-section">
@@ -330,7 +244,7 @@ function doExport(): void {
             <label for="max-steps">最大步数</label>
           </AppTooltip>
           <input id="max-steps" v-model="draft.maxSteps" type="text" inputmode="numeric" />
-          <ParameterHelpBlock :help="help.maxSteps" />
+          <ParameterHelpBlock title="最大步数" :help="help.maxSteps" />
           <small v-if="fieldError('maxSteps')" class="field-error">{{ fieldError('maxSteps') }}</small>
           <small v-for="(message, i) in fieldWarnings('maxSteps')" :key="`w-${i}`" class="field-warning">{{ message }}</small>
         </div>
@@ -342,16 +256,11 @@ function doExport(): void {
           </AppTooltip>
           <input id="target-time" v-model="draft.targetSimulationTime" />
           <small class="param-unit">{{ unitLabel('time', unitSystem) }}</small>
-          <ParameterHelpBlock :help="help.totalTime" />
+          <ParameterHelpBlock title="目标模拟时间" :help="help.totalTime" />
           <small v-if="fieldError('targetSimulationTimeSeconds')" class="field-error">{{ fieldError('targetSimulationTimeSeconds') }}</small>
           <small v-for="(message, i) in fieldWarnings('targetSimulationTimeSeconds')" :key="`w-${i}`" class="field-warning">{{ message }}</small>
         </div>
       </template>
-    </div>
-
-    <div class="parameter-section">
-      <header><span>显示设置</span></header>
-      <label class="check-row"><input type="checkbox" :checked="true" disabled />轨迹线<span>2,000 点</span></label>
     </div>
 
     <section v-if="configSummary" class="config-summary" aria-label="当前配置解读">
@@ -365,6 +274,16 @@ function doExport(): void {
         <div><dt>软化 / 最近距离</dt><dd>{{ configSummary.softeningToInitialDistanceRatio == null ? '—' : formatScientific(configSummary.softeningToInitialDistanceRatio) }}</dd></div>
       </dl>
     </section>
+
+    <BodyEditorDialog
+      :open="bodyEditorOpen"
+      :mode="bodyEditorMode"
+      :body="bodyEditorBody"
+      :config-draft="draft"
+      :unit-system="unitSystem"
+      @save="saveBody"
+      @close="closeBodyEditor"
+    />
 
     <div class="validation-summary">
       <div v-if="draftStore.validationError" class="validation-item is-error">{{ draftStore.validationError }}</div>

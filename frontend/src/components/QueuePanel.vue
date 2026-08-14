@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useExperimentsStore } from '../stores/experiments'
 import { EXPERIMENT_STATUS_LABELS } from '../contracts'
 import { formatBytes, formatInteger } from '../lib/format'
+import AppTooltip from './AppTooltip.vue'
 
 const store = useExperimentsStore()
 const reorderMode = ref(false)
 const reorderIds = ref<string[]>([])
 
 const queued = computed(() => store.queued)
+const canReorder = computed(() => queued.value.length >= 2)
 const healthLabels = {
   GOOD: '可信度良好',
   WARNING: '谨慎解读',
@@ -17,11 +19,23 @@ const healthLabels = {
 } as const
 
 function toggleReorder(): void {
+  if (!canReorder.value) return
   reorderMode.value = !reorderMode.value
   if (reorderMode.value) {
     reorderIds.value = [...queued.value.map((item) => item.id)]
   }
 }
+
+watch(
+  () => queued.value.map((item) => item.id).join('\u0000'),
+  (ids) => {
+    if (!reorderMode.value) return
+    if (!canReorder.value || ids !== reorderIds.value.join('\u0000')) {
+      reorderMode.value = false
+      reorderIds.value = []
+    }
+  },
+)
 
 function moveId(id: string, direction: -1 | 1): void {
   const index = reorderIds.value.indexOf(id)
@@ -49,9 +63,19 @@ async function confirmReorder(): Promise<void> {
   <div class="queue-panel">
     <div class="lab-title">
       <span>任务队列</span>
-      <button class="queue-reorder-toggle" type="button" @click="toggleReorder">
-        {{ reorderMode ? '完成排序' : '调整顺序' }}
-      </button>
+      <AppTooltip
+        :text="canReorder ? '调整等待任务顺序' : '至少需要两个等待任务'"
+        :focusable="!canReorder"
+      >
+        <button
+          class="queue-reorder-toggle"
+          :class="{ 'is-active': reorderMode }"
+          type="button"
+          :disabled="!canReorder"
+          :aria-pressed="reorderMode"
+          @click="toggleReorder"
+        >{{ reorderMode ? '完成排序' : '调整顺序' }}</button>
+      </AppTooltip>
     </div>
 
     <div v-if="reorderMode" class="reorder-box">

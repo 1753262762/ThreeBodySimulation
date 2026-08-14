@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, ref, useAttrs } from 'vue'
 import type { SimulationEvent } from '../contracts'
 import { EVENT_TYPE_LABELS } from '../contracts'
 import { formatScientific, formatSimulationTime } from '../lib/format'
@@ -13,12 +13,19 @@ const props = defineProps<{
   selectedEventId: string | null
 }>()
 
+defineOptions({ inheritAttrs: false })
+
 const emit = defineEmits<{
   (e: 'select', event: SimulationEvent): void
 }>()
 
 const experimentsStore = useExperimentsStore()
 const preferences = usePreferencesStore()
+const attrs = useAttrs()
+const expanded = ref(false)
+const triggerRef = ref<HTMLButtonElement | null>(null)
+const dialogRef = ref<HTMLElement | null>(null)
+const titleId = `event-panel-title-${Math.random().toString(36).slice(2, 10)}`
 
 const PHASE_LABELS: Record<string, string> = {
   ENTER: '进入',
@@ -45,6 +52,51 @@ const DIAGNOSTIC_CODE_LABELS: Record<string, string> = {
 }
 
 const unitSystem = computed(() => preferences.unitSystem)
+
+function openDialog(): void {
+  expanded.value = true
+  void nextTick(() => triggerRef.value?.focus())
+}
+
+function closeDialog(): void {
+  expanded.value = false
+  void nextTick(() => triggerRef.value?.focus())
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if (!expanded.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeDialog()
+    return
+  }
+  if (event.key !== 'Tab') return
+  const dialog = dialogRef.value
+  if (!dialog) return
+  const focusables = Array.from(
+    dialog.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  )
+  if (focusables.length === 0) return
+  const first = focusables[0] as HTMLElement
+  const last = focusables[focusables.length - 1] as HTMLElement
+  const active = document.activeElement
+  if (event.shiftKey) {
+    if (active === first || !dialog.contains(active)) {
+      event.preventDefault()
+      last.focus()
+    }
+  } else if (active === last || !dialog.contains(active)) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+function selectEvent(event: SimulationEvent): void {
+  emit('select', event)
+  if (expanded.value) closeDialog()
+}
 
 /** 事件按创建顺序倒序，最近的排在最前。 */
 const visibleEvents = computed(() => {
@@ -130,10 +182,37 @@ function evidenceRows(event: SimulationEvent): EvidenceRow[] {
 </script>
 
 <template>
-  <div class="event-panel" data-testid="event-panel">
+  <Teleport to="body" :disabled="!expanded">
+  <div
+    class="event-panel-host"
+    :class="{ 'is-expanded': expanded }"
+    @click.self="closeDialog"
+  >
+  <div
+    ref="dialogRef"
+    v-bind="attrs"
+    class="event-panel"
+    :class="{ 'is-dialog': expanded }"
+    data-testid="event-panel"
+    :role="expanded ? 'dialog' : undefined"
+    :aria-modal="expanded ? 'true' : undefined"
+    :aria-labelledby="expanded ? titleId : undefined"
+    :tabindex="expanded ? -1 : undefined"
+    @keydown="onKeydown"
+  >
     <header class="event-panel-header">
-      <b>事件与诊断</b>
-      <span>{{ visibleEvents.length }} 条</span>
+      <b :id="titleId">事件与诊断</b>
+      <div class="event-panel-header-actions">
+        <span>{{ visibleEvents.length }} 条</span>
+        <button
+          ref="triggerRef"
+          type="button"
+          class="event-panel-expand"
+          :aria-expanded="expanded"
+          :data-autofocus="expanded ? '' : undefined"
+          @click="expanded ? closeDialog() : openDialog()"
+        >{{ expanded ? '关闭' : '展开' }}</button>
+      </div>
     </header>
     <div class="event-content">
       <PhenomenonOverview :events="events" :health="experimentsStore.liveHealthReport" />
@@ -202,10 +281,12 @@ function evidenceRows(event: SimulationEvent): EvidenceRow[] {
           </div>
         </template>
         <footer class="event-card-footer">
-          <button type="button" class="event-locate" @click="emit('select', event)">定位到此处</button>
+          <button type="button" class="event-locate" @click="selectEvent(event)">定位到此处</button>
         </footer>
       </article>
       </div>
     </div>
   </div>
+  </div>
+  </Teleport>
 </template>

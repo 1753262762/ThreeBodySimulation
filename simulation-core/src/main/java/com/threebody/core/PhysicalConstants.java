@@ -18,7 +18,7 @@ public final class PhysicalConstants {
     public static final int MIN_BODY_COUNT = 2;
 
     /** 允许的最多天体数量。 */
-    public static final int MAX_BODY_COUNT = 20;
+    public static final int MAX_BODY_COUNT = 100;
 
     /** 近距离事件阈值系数：距离小于 5 倍软化长度时记录事件。 */
     public static final double NEAR_ENCOUNTER_SOFTENING_FACTOR = 5.0;

@@ -488,7 +488,7 @@ components:
         bodies:
           type: array
           minItems: 2
-          maxItems: 20
+          maxItems: 100
           items:
             $ref: '#/components/schemas/BodySpec'
         timeStepSeconds:

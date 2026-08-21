@@ -20,7 +20,7 @@ simulation-launcher      程序入口及最终可执行 JAR
 
 - `Vector3`：不可变三维向量。
 - `BodySpec`：UUID、名称、颜色、质量、初始位置和速度。
-- `SimulationConfig`：2–20 个天体、时间步长、引力常数、软化长度和结束条件。
+- `SimulationConfig`：2–100 个天体、时间步长、引力常数、软化长度和结束条件。
 - `SimulationState`：步数、模拟时间、天体当前状态和基准指标。
 - `Experiment`：配置、队列状态、快照、指标、事件及轨迹摘要。
 - 后端接口全部使用 SI：kg、m、m/s、s；禁止在核心层使用 AU 或太阳质量。
@@ -100,7 +100,7 @@ WebSocket 地址为 `/ws/v1/experiments/{id}`，消息由 `contracts/ws-events.s
 - 单元测试：向量运算、RK4 确定性、对称配置、软化引力、能量与角动量。
 - 状态测试：队列顺序、暂停恢复、单步、重启、取消及非法转换。
 - 持久化测试：原子写入、损坏文件隔离、异常退出恢复和跨版本字段兼容。
-- 边界测试：2/20 个天体、非正质量、NaN/Infinity、极端时间步长和近距离事件。
+- 边界测试：2/100 个天体、非正质量、NaN/Infinity、极端时间步长和近距离事件。
 - 集成测试：OpenAPI 请求、WebSocket Schema、序列号、重连、JSON/CSV 和报告数据。
 - 验收命令为 `mvn clean verify`；最终 JAR 必须能在无 Node.js 环境下启动并访问参数实验室。
 

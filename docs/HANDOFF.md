@@ -4,7 +4,7 @@
 
 - 正式界面采用"参数实验室".
 - 本地 Java 服务负责所有物理计算;前端使用 Vue 3、TypeScript 和 Canvas 2D.
-- 支持 2–20 个天体、XY/XZ/YZ 投影、SI/天文单位切换.
+- 支持 2–100 个天体、XY/XZ/YZ 投影、SI/天文单位切换.
 - 参数先保存为草稿,点击应用后校验并从初始状态重新计算.
 - 使用软化引力并记录近距离事件,不实现碰撞合并.
 - 实验按单工作线程顺序执行,以最大步数或目标模拟时间结束.
@@ -154,7 +154,7 @@ npm run build
   - 格式化 lib/format.ts:科学计数法、百分比漂移、模拟时间/墙钟/字节可读化
   - API 客户端 lib/apiClient.ts:全部 REST 端点、ApiError 统一错误模型、CSV 采样步长响应头解析
   - WebSocket 客户端 lib/experimentSocket.ts:sequence 去重/乱序丢弃、指数退避重连、onResync 全量恢复
-  - 参数草稿 lib/configDraft.ts:2–20 天体、单位制切换重写、本地前置校验、JSON 导入导出
+  - 参数草稿 lib/configDraft.ts:2–100 天体、单位制切换重写、本地前置校验、JSON 导入导出
   - Pinia stores:draft(预设/草稿/校验)、experiments(队列/实时/轨迹缓冲)、preferences(单位制/投影/显示开关)
   - MSW mock:mockEngine(RK4+软化引力)、mockRepository(状态机+采样)、mockScheduler(单工作线程队列消费+WS 广播)、handlers(12 REST 端点)
   - 页面:LabView(参数+队列双面板、Canvas、KPI、ECharts)、ExperimentView(实时详情)、ReportView(报告+打印+JSON/CSV 下载)、NotFoundView

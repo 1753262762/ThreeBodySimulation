@@ -87,6 +87,40 @@ class ConfigValidatorTest {
     }
 
     @Test
+    @DisplayName("天体数量允许 100 个并拒绝 101 个")
+    void bodyCountAcceptsOneHundredAndRejectsOneHundredOne() {
+        SimulationConfig atLimit = configWithBodyCount(PhysicalConstants.MAX_BODY_COUNT);
+        assertTrue(ConfigValidator.validate(atLimit).valid(), "100 个天体应通过数量校验");
+
+        SimulationConfig overLimit = configWithBodyCount(PhysicalConstants.MAX_BODY_COUNT + 1);
+        ValidationResult result = ConfigValidator.validate(overLimit);
+        assertFalse(result.valid());
+        assertTrue(result.issues().stream()
+                .anyMatch(i -> i.code() == ValidationCode.BODY_COUNT_OUT_OF_RANGE));
+    }
+
+    private static SimulationConfig configWithBodyCount(int count) {
+        List<BodySpec> bodies = new java.util.ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            bodies.add(new BodySpec(
+                    "body-" + i,
+                    "天体" + i,
+                    "#4d96ff",
+                    1.0e20,
+                    Vector3.of(i * 1.0e9, 0, 0),
+                    Vector3.ZERO));
+        }
+        return new SimulationConfig(
+                "数量边界",
+                bodies,
+                1.0,
+                PhysicalConstants.GRAVITATIONAL_CONSTANT,
+                1.0e3,
+                10L,
+                null);
+    }
+
+    @Test
     @DisplayName("TIME_STEP_TOO_LARGE 在周期过短时给出 HIGH")
     void timeStepTooLargeHigh() {
         // 两体距离 1e8 m，近轨道周期很小，3600s 步长相对过大

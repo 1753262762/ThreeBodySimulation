@@ -8,7 +8,7 @@ import java.util.OptionalLong;
  * 模拟配置。全部为 SI 单位；maxSteps 与 targetSimulationTimeSeconds 至少提供一个作为结束条件。
  *
  * @param name                        配置名称
- * @param bodies                      2-20 个天体
+ * @param bodies                      2-100 个天体
  * @param timeStepSeconds             时间步长(s)
  * @param gravitationalConstant       引力常数(m^3 kg^-1 s^-2)
  * @param softeningLengthMeters       软化长度 epsilon(m)

@@ -181,8 +181,8 @@ class NBodyIntegratorTest {
     }
 
     @Test
-    @DisplayName("20 体系统可以稳定推进且状态保持有限")
-    void supportsTwentyBodies() {
+    @DisplayName("100 体系统可以稳定推进且状态保持有限")
+    void supportsMaximumBodies() {
         List<BodySpec> bodies = new java.util.ArrayList<>();
         for (int i = 0; i < PhysicalConstants.MAX_BODY_COUNT; i++) {
             double angle = 2 * Math.PI * i / PhysicalConstants.MAX_BODY_COUNT;
@@ -191,7 +191,7 @@ class NBodyIntegratorTest {
                     Vector3.of(radius * Math.cos(angle), radius * Math.sin(angle), 0),
                     Vector3.of(-1.0e4 * Math.sin(angle), 1.0e4 * Math.cos(angle), 0)));
         }
-        SimulationConfig config = new SimulationConfig("二十体", bodies, 3600.0,
+        SimulationConfig config = new SimulationConfig("最大天体数", bodies, 3600.0,
                 PhysicalConstants.GRAVITATIONAL_CONSTANT, 1.0e7, 1000L, null);
         SimulationState state = NBodyIntegrator.initialState(config);
         for (int i = 0; i < 1000; i++) {

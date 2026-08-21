@@ -70,7 +70,7 @@ export const ARCHIVE_POINT_LIMIT = 50000
 
 /** 天体数量范围，与契约 SimulationConfig.bodies 的 minItems/maxItems 一致。 */
 export const MIN_BODY_COUNT = 2
-export const MAX_BODY_COUNT = 20
+export const MAX_BODY_COUNT = 100
 
 /** 终态集合：不再产生新的模拟进度。 */
 export const TERMINAL_STATUSES: readonly ExperimentStatus[] = [

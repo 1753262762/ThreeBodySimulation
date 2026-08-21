@@ -6,12 +6,14 @@ import {
   createReplayJob,
   deleteReplayJob,
   emitEvent,
+  findEquivalentRecord,
   getHistorySlice,
   getRecord,
   getReplayJob,
   pendingReplayJobCount,
   replayJobResponse,
   resetRepository,
+  restartRecord,
   stopReplayJobs,
   upsertEvent,
 } from '../mockRepository'
@@ -152,6 +154,23 @@ describe('mockRepository 历史与回放（F7）', () => {
     expect(slice.points.length).toBe(6)
     expect(slice.currentState?.step).toBe(5)
     expect(getRecord(record.id)).toBeDefined()
+  })
+
+  it('同配置忽略顶层名称与天体 ID，并且重启原地清空结果', () => {
+    const record = createRecord(baseConfig(), '第一次')
+    advance(record, 5)
+    const same = {
+      ...baseConfig(),
+      name: '另一个配置名',
+      bodies: baseConfig().bodies.map((body, index) => ({ ...body, id: `body-${index}` })),
+    }
+
+    expect(findEquivalentRecord(same)?.id).toBe(record.id)
+    restartRecord(record, same)
+    expect(record.id).toBe('00000000-0000-4000-8000-000000000001')
+    expect(record.status).toBe('QUEUED')
+    expect(record.state.step).toBe(0)
+    expect(record.samples).toHaveLength(1)
   })
 
   it('maintains an isolated authoritative-shaped Health report', () => {

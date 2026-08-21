@@ -99,13 +99,41 @@ test.describe('桌面响应式布局', () => {
     await page.waitForURL(/\/experiments\//)
     await page.getByRole('button', { name: '暂停模拟' }).click()
     await expect(page.getByText('状态：PAUSED', { exact: true })).toBeVisible({ timeout: 10_000 })
+    await page.getByRole('button', { name: '收起监控区', exact: true }).click()
 
     const canvas = page.locator('.simulation-canvas-dynamic')
     const canvasBox = await canvas.boundingBox()
     expect(canvasBox).not.toBeNull()
+    const findBodyPixel = () => canvas.evaluate((element) => {
+      const surface = element as HTMLCanvasElement
+      const context = surface.getContext('2d', { willReadFrequently: true })
+      if (!context) return null
+      const pixels = context.getImageData(0, 0, surface.width, surface.height).data
+      let best: { x: number; y: number; distance: number } | null = null
+      for (let y = 0; y < surface.height; y += 1) {
+        for (let x = 0; x < surface.width; x += 1) {
+          const offset = (y * surface.width + x) * 4
+          const red = pixels[offset] ?? 0
+          const green = pixels[offset + 1] ?? 0
+          const blue = pixels[offset + 2] ?? 0
+          const alpha = pixels[offset + 3] ?? 0
+          if (alpha === 255 && Math.max(red, green, blue) - Math.min(red, green, blue) > 60) {
+            const distance = Math.abs(y - surface.height / 2)
+            if (!best || distance < best.distance) best = { x, y, distance }
+          }
+        }
+      }
+      return best ? {
+        x: best.x * surface.clientWidth / surface.width,
+        y: best.y * surface.clientHeight / surface.height,
+      } : null
+    })
+    await expect.poll(async () => findBodyPixel()).not.toBeNull()
+    const bodyPixel = await findBodyPixel()
+    expect(bodyPixel).not.toBeNull()
     await page.mouse.move(
-      canvasBox!.x + canvasBox!.width / 2,
-      canvasBox!.y + canvasBox!.height / 2,
+      canvasBox!.x + bodyPixel!.x,
+      canvasBox!.y + bodyPixel!.y,
     )
     const tooltip = page.getByTestId('body-hover-tooltip')
     await expect(tooltip).toBeVisible()

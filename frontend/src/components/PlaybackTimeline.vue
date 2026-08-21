@@ -19,6 +19,7 @@ const preferences = usePreferencesStore()
 const timelineRef = ref<HTMLElement | null>(null)
 const trackRef = ref<HTMLElement | null>(null)
 const scrubbing = ref(false)
+const activePointerId = ref<number | null>(null)
 
 const PLAYBACK_MODE_LABELS: Record<string, string> = {
   LIVE: 'LIVE',
@@ -108,32 +109,62 @@ function applyPendingMove(): void {
 }
 
 function onPointerDown(event: PointerEvent): void {
-  if (event.button !== 0 || !experimentsStore.current || upper.value <= lower.value) return
+  if (scrubbing.value || event.button !== 0 || !experimentsStore.current || upper.value <= lower.value) return
+  event.preventDefault()
   scrubbing.value = true
-  ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
+  activePointerId.value = event.pointerId
+  try {
+    ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
+  } catch {
+    // 浏览器可能在指针已经结束时拒绝 capture；取消或 capture 丢失仍会恢复状态。
+  }
   experimentsStore.beginReviewScrub(stepFromEvent(event))
 }
 
 function onPointerMove(event: PointerEvent): void {
-  if (!scrubbing.value) return
+  if (!scrubbing.value || activePointerId.value !== event.pointerId) return
+  event.preventDefault()
   pendingMoveStep = stepFromEvent(event)
-  if (moveRafId !== null || typeof requestAnimationFrame !== 'function') return
+  if (typeof requestAnimationFrame !== 'function') {
+    applyPendingMove()
+    return
+  }
+  if (moveRafId !== null) return
   moveRafId = requestAnimationFrame(() => {
     moveRafId = null
     applyPendingMove()
   })
 }
 
-function onPointerUp(event: PointerEvent): void {
-  if (!scrubbing.value) return
+function finishScrub(event?: PointerEvent, settle = true): void {
+  if (!scrubbing.value || (event && activePointerId.value !== event.pointerId)) return
   scrubbing.value = false
-  ;(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId)
+  const pointerId = activePointerId.value
+  activePointerId.value = null
+  const target = event?.currentTarget as HTMLElement | null
+  if (target && pointerId !== null) {
+    try {
+      if (!target.hasPointerCapture || target.hasPointerCapture(pointerId)) {
+        target.releasePointerCapture?.(pointerId)
+      }
+    } catch {
+      // lostpointercapture 可能先于 pointerup 到达，重复释放可安全忽略。
+    }
+  }
   if (moveRafId !== null && typeof cancelAnimationFrame === 'function') {
     cancelAnimationFrame(moveRafId)
     moveRafId = null
   }
   applyPendingMove()
-  experimentsStore.settleReviewCursor()
+  experimentsStore.endReviewScrub(settle)
+}
+
+function onPointerUp(event: PointerEvent): void {
+  finishScrub(event)
+}
+
+function onLostPointerCapture(event: PointerEvent): void {
+  finishScrub(event)
 }
 
 function onEventTick(tick: EventTick): void {
@@ -187,6 +218,7 @@ function retryExactResolution(): void {
 
 onBeforeUnmount(() => {
   if (moveRafId !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(moveRafId)
+  finishScrub(undefined, false)
 })
 
 const replayBusy = computed(() => (
@@ -262,6 +294,7 @@ const primaryLabel = computed(() => {
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
+      @lostpointercapture="onLostPointerCapture"
     >
       <div class="timeline-clip"></div>
       <div class="timeline-live-edge" aria-hidden="true"></div>

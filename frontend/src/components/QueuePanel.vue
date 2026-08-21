@@ -57,6 +57,11 @@ async function confirmReorder(): Promise<void> {
   const ok = await store.reorderQueue(full)
   if (ok) reorderMode.value = false
 }
+
+function restartExperiment(id: string, name: string): void {
+  const confirmed = window.confirm(`重启“${name}”将清空现有报告与轨迹，并使用原参数重新计算。是否继续？`)
+  if (confirmed) void store.submitActionFor(id, 'RESTART')
+}
 </script>
 
 <template>
@@ -122,16 +127,23 @@ async function confirmReorder(): Promise<void> {
         </div>
         <div class="queue-actions">
           <button v-if="item.status === 'QUEUED'" type="button" @click="store.submitActionFor(item.id, 'CANCEL')">取消</button>
-          <button v-if="item.status === 'RUNNING'" type="button" @click="store.submitActionFor(item.id, 'PAUSE')">暂停</button>
-          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitActionFor(item.id, 'RESUME')">继续</button>
-          <button v-if="item.status === 'PAUSED'" type="button" @click="store.submitActionFor(item.id, 'STEP')">单步</button>
-          <button type="button" class="danger" @click="store.deleteExperiment(item.id)">删除</button>
+          <button v-if="item.status === 'RUNNING'" type="button" :disabled="store.actionPending !== null" @click="store.submitActionFor(item.id, 'PAUSE')">暂停</button>
+          <button v-if="item.status === 'PAUSED'" type="button" :disabled="store.actionPending !== null" @click="store.submitActionFor(item.id, 'RESUME')">继续</button>
+          <button v-if="item.status === 'PAUSED'" type="button" :disabled="store.actionPending !== null" @click="store.submitActionFor(item.id, 'STEP')">单步</button>
+          <button
+            v-if="item.status === 'PAUSED' || item.status === 'COMPLETED' || item.status === 'CANCELLED' || item.status === 'FAILED'"
+            type="button"
+            :disabled="store.actionPending !== null"
+            @click="restartExperiment(item.id, item.name)"
+          >重启</button>
+          <button type="button" class="danger" :disabled="store.actionPending !== null" @click="store.deleteExperiment(item.id)">删除</button>
           <RouterLink v-if="item.status === 'COMPLETED'" :to="'/reports/' + item.id">报告</RouterLink>
         </div>
       </div>
     </template>
 
     <div class="queue-storage">占用空间：{{ formatBytes(store.totalStorageBytes) }}</div>
+    <div v-if="store.actionNotice" class="action-notice">{{ store.actionNotice }}</div>
     <div v-if="store.actionError" class="action-error">{{ store.actionError }}</div>
   </div>
 </template>

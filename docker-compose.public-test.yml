@@ -1,0 +1,35 @@
+name: threebody-public-test
+
+services:
+  app:
+    image: three-body-lab:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:18721:8721"
+    environment:
+      SERVER_ADDRESS: "0.0.0.0"
+    volumes:
+      - public-test-data:/home/threebody/.threebody-lab
+    networks:
+      - public-test
+    stop_grace_period: 30s
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://app:8721
+    depends_on:
+      - app
+    networks:
+      - public-test
+
+networks:
+  public-test:
+
+volumes:
+  public-test-data:

@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Experiment } from '../../contracts'
 import { useExperimentsStore } from '../../stores/experiments'
 import PlaybackTimeline from '../PlaybackTimeline.vue'
@@ -25,6 +25,10 @@ function experiment(status: 'RUNNING' | 'PAUSED' = 'RUNNING'): Experiment {
 
 describe('PlaybackTimeline', () => {
   beforeEach(() => setActivePinia(createPinia()))
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
 
   it('实时模式使用同一主按钮暂停模拟且不渲染旧实验进度条', async () => {
     const store = useExperimentsStore()
@@ -66,5 +70,39 @@ describe('PlaybackTimeline', () => {
     await timeline.trigger('keydown', { key: 'ArrowLeft' })
     expect(submit).toHaveBeenCalledWith('PAUSE')
     expect(stepFrame).toHaveBeenCalledWith(-1)
+  })
+
+  it('无 RAF 时立即跟随有效 pointer，并在取消或 capture 丢失时结束拖动', async () => {
+    vi.stubGlobal('requestAnimationFrame', undefined)
+    const store = useExperimentsStore()
+    store.current = experiment('PAUSED')
+    store.availableFromStep = 0
+    const begin = vi.spyOn(store, 'beginReviewScrub')
+    const seek = vi.spyOn(store, 'seekCursorFromCache')
+    const end = vi.spyOn(store, 'endReviewScrub')
+    const wrapper = mount(PlaybackTimeline)
+    const track = wrapper.get('[role="slider"]')
+    vi.spyOn(track.element, 'getBoundingClientRect').mockReturnValue({
+      left: 0, right: 100, top: 0, bottom: 38, width: 100, height: 38, x: 0, y: 0,
+      toJSON: () => ({}),
+    })
+
+    const dispatchPointer = (type: string, clientX: number) => {
+      const event = new MouseEvent(type, { bubbles: true, button: 0, clientX })
+      Object.defineProperty(event, 'pointerId', { value: 7 })
+      track.element.dispatchEvent(event)
+    }
+    dispatchPointer('pointerdown', 100)
+    dispatchPointer('pointermove', 40)
+    dispatchPointer('lostpointercapture', 40)
+
+    expect(begin).toHaveBeenCalledWith(100)
+    expect(seek).toHaveBeenCalledWith(40)
+    expect(end).toHaveBeenCalledOnce()
+
+    dispatchPointer('pointerdown', 80)
+    dispatchPointer('pointercancel', 60)
+    expect(begin).toHaveBeenLastCalledWith(80)
+    expect(end).toHaveBeenCalledTimes(2)
   })
 })

@@ -4,7 +4,7 @@ import SimulationScene3D from '../SimulationScene3D.vue'
 import { TrajectoryBuffer } from '../../lib/trajectoryBuffer'
 
 describe('SimulationScene3D', () => {
-  it('WebGL2 初始化失败时显示内联降级提示', () => {
+  it('WebGL2 初始化失败时显示内联降级提示', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const wrapper = mount(SimulationScene3D, {
       props: {
@@ -17,6 +17,7 @@ describe('SimulationScene3D', () => {
         bodyColors: new Map(),
       },
     })
+    await wrapper.vm.$nextTick()
 
     expect(wrapper.get('[role="alert"]').text()).toContain('无法初始化 WebGL2')
     expect(wrapper.find('[data-testid="simulation-scene-3d-canvas"]').exists()).toBe(false)

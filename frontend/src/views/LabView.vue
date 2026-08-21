@@ -279,6 +279,13 @@ function onWarningCancel(): void {
   draftStore.dismissWarnings()
 }
 
+function restartActiveExperiment(): void {
+  const experiment = activeExperiment.value
+  if (!experiment) return
+  const confirmed = window.confirm(`重启“${experiment.name}”将清空现有报告与轨迹，并使用原参数重新计算。是否继续？`)
+  if (confirmed) void experimentsStore.submitAction('RESTART')
+}
+
 function setPlane(plane: ProjectionPlane): void {
   preferences.setProjection(plane)
 }
@@ -699,8 +706,14 @@ onUnmounted(() => {
                   <button v-if="experimentsStore.can('RESUME')" @click="experimentsStore.submitAction('RESUME')">继续</button>
                   <button v-if="experimentsStore.can('STEP')" @click="experimentsStore.submitAction('STEP')">单步</button>
                   <button v-if="experimentsStore.can('CANCEL')" class="danger" @click="experimentsStore.submitAction('CANCEL')">取消</button>
+                  <button
+                    v-if="activeExperiment.status === 'PAUSED' || activeExperiment.status === 'COMPLETED' || activeExperiment.status === 'CANCELLED' || activeExperiment.status === 'FAILED'"
+                    :disabled="experimentsStore.actionPending !== null"
+                    @click="restartActiveExperiment"
+                  >重启</button>
                 </div>
                 <button class="apply-button" @click="router.push('/reports/' + activeExperiment.id)">查看报告</button>
+                <div v-if="experimentsStore.actionNotice" class="action-notice">{{ experimentsStore.actionNotice }}</div>
                 <div v-if="experimentsStore.actionError" class="action-error">{{ experimentsStore.actionError }}</div>
               </template>
             </div>

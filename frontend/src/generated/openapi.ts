@@ -56,7 +56,7 @@ export interface paths {
         /** 按队列顺序列出实验 */
         get: operations["listExperiments"];
         put?: never;
-        /** 创建实验并入队 */
+        /** 创建实验并入队，或复用同配置实验 */
         post: operations["createExperiment"];
         delete?: never;
         options?: never;
@@ -987,6 +987,17 @@ export interface operations {
             };
         };
         responses: {
+            /** @description 已存在同配置实验，返回复用的实验记录 */
+            200: {
+                headers: {
+                    /** @description 复用的实验资源地址 */
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Experiment"];
+                };
+            };
             /** @description 已创建 */
             201: {
                 headers: {

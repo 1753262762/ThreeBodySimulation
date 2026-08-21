@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ExperimentSummary } from '../../contracts'
 import { useExperimentsStore } from '../../stores/experiments'
 import AppTooltip from '../AppTooltip.vue'
@@ -50,6 +50,26 @@ function reorderNames(wrapper: ReturnType<typeof mountPanel>): string[] {
 describe('QueuePanel', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+  })
+
+  afterEach(() => vi.restoreAllMocks())
+
+  it('完成态显示重启，取消确认不提交，确认后保持原 ID 发送 RESTART', async () => {
+    const store = useExperimentsStore()
+    store.summaries = [summary('completed-1', '已完成', { status: 'COMPLETED' })]
+    const submitActionFor = vi.spyOn(store, 'submitActionFor').mockResolvedValue(true)
+    const confirm = vi.spyOn(window, 'confirm')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true)
+    const wrapper = mountPanel()
+    const restart = wrapper.findAll('button').find((button) => button.text() === '重启')
+
+    expect(restart).toBeDefined()
+    await restart!.trigger('click')
+    expect(submitActionFor).not.toHaveBeenCalled()
+    await restart!.trigger('click')
+    expect(confirm).toHaveBeenCalledTimes(2)
+    expect(submitActionFor).toHaveBeenCalledWith('completed-1', 'RESTART')
   })
 
   it('把卡片实验 ID 传给动作方法', async () => {

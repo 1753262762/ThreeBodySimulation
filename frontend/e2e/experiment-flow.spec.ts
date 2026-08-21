@@ -150,6 +150,19 @@ test('创建实验后实时状态可暂停并继续', async ({ page }) => {
   await page.getByRole('button', { name: '暂停模拟' }).click()
   await expect(page.getByText('状态：PAUSED', { exact: true })).toBeVisible({ timeout: 10_000 })
 
+  const timelineSlider = page.getByRole('slider', { name: '历史时间轴' })
+  const sliderBox = await timelineSlider.boundingBox()
+  expect(sliderBox).not.toBeNull()
+  const sliderMaximum = Number(await timelineSlider.getAttribute('aria-valuemax'))
+  const sliderY = sliderBox!.y + sliderBox!.height / 2
+  await page.mouse.move(sliderBox!.x + sliderBox!.width - 1, sliderY)
+  await page.mouse.down()
+  await page.mouse.move(sliderBox!.x + sliderBox!.width * 0.35, sliderY, { steps: 5 })
+  await expect.poll(async () => Number(await timelineSlider.getAttribute('aria-valuenow'))).toBeLessThan(sliderMaximum * 0.8)
+  await expect(page.getByRole('button', { name: '返回实时' })).toBeVisible()
+  await page.mouse.up()
+  await page.getByRole('button', { name: '返回实时' }).click()
+
   await page.getByRole('button', { name: '后退一帧' }).click()
   await expect(page.getByRole('button', { name: '返回实时' })).toBeVisible()
   await expect(page.getByLabel('Replay 倍速')).toHaveValue('1')
@@ -169,5 +182,12 @@ test('创建实验后实时状态可暂停并继续', async ({ page }) => {
 
   await page.getByRole('button', { name: '继续模拟' }).click()
   await expect(page.getByText('状态：RUNNING', { exact: true })).toBeVisible({ timeout: 10_000 })
+
+  await page.getByRole('button', { name: '暂停模拟' }).click()
+  await expect(page.getByText('状态：PAUSED', { exact: true })).toBeVisible({ timeout: 10_000 })
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.locator('.chart-card').filter({ hasText: '实验控制' }).getByRole('button', { name: '重启', exact: true }).click()
+  await expect(page).toHaveURL(experimentUrl)
+  await expect(page.getByText(/状态：(QUEUED|RUNNING)/)).toBeVisible({ timeout: 10_000 })
   expect(pageErrors).toEqual([])
 })

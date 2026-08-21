@@ -96,6 +96,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
   const connectionState = ref<ConnectionState>('IDLE')
   const actionPending = ref<ExperimentAction | null>(null)
   const actionError = ref<string | null>(null)
+  const actionNotice = ref<string | null>(null)
 
   /** Display interpolation is kept separate from authoritative liveState. */
   const snapshotBuffer = markRaw(new SnapshotBuffer())
@@ -130,6 +131,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
   let reviewLastFrameMs: number | null = null
   let reviewCursorPosition = 0
   let reviewStepsPerSecond = 1
+  let reviewScrubbing = false
   let exactRequestGeneration = 0
   /** 当前持有的回放任务；离开回看、切换实验或卸载时 DELETE。 */
   let ownedReplayJobId: string | null = null
@@ -211,6 +213,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     availableFromStep.value = null
     availableToStep.value = null
     archiveSampleStride.value = 1
+    reviewScrubbing = false
   }
 
   async function loadList(): Promise<void> {
@@ -585,9 +588,8 @@ export const useExperimentsStore = defineStore('experiments', () => {
   /** pointerdown 进入回看并冻结游标；只查缓存，不发请求。 */
   function beginReviewScrub(step: number): void {
     cancelExactResolution()
-    if (playbackMode.value === 'LIVE') {
-      playbackMode.value = 'REVIEW_PAUSED'
-    }
+    reviewScrubbing = true
+    playbackMode.value = 'REVIEW_PAUSED'
     stopReviewTicker()
     seekCursorFromCache(step)
   }
@@ -597,10 +599,17 @@ export const useExperimentsStore = defineStore('experiments', () => {
     if (playbackMode.value === 'LIVE') return
     const bounded = clampTimelineStep(step, earliestPlaybackStep(), latestPlaybackStep())
     cursorStep.value = bounded
-    if (maybeAutoReturnToLive()) return
+    if (!reviewScrubbing && maybeAutoReturnToLive()) return
     const point = playbackBufferRef.value?.interpolateAt(bounded)
     cursorTimeSeconds.value = point?.simulationTimeSeconds ?? cursorTimeSeconds.value
     playbackPrecision.value = point?.approximate ? 'APPROXIMATE' : 'EXACT'
+  }
+
+  /** 松开拖动后才允许在最新步返回 LIVE；其余位置只解析最终游标。 */
+  function endReviewScrub(settle = true): void {
+    if (!reviewScrubbing) return
+    reviewScrubbing = false
+    if (settle && !maybeAutoReturnToLive()) settleReviewCursor()
   }
 
   /** 单击跳转：总范围 1%，至少一步。 */
@@ -709,6 +718,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     selectedEventId.value = null
     historyError.value = null
     activeReplayJob.value = null
+    reviewScrubbing = false
   }
 
   /** 切换实验、重启或删除前统一取消任务并清空历史状态。 */
@@ -835,10 +845,12 @@ export const useExperimentsStore = defineStore('experiments', () => {
   async function createExperiment(config: SimulationConfig, name?: string,
     retryContext?: ExperimentRetryContext | null): Promise<Experiment | null> {
     actionError.value = null
+    actionNotice.value = null
     try {
-      const created = await api.createExperiment({ name, config, retryContext: retryContext ?? null })
+      const { experiment, reused } = await api.createExperiment({ name, config, retryContext: retryContext ?? null })
+      if (reused) actionNotice.value = '已存在同参数实验，已直接打开，未重复创建或保存。'
       await loadList()
-      return created
+      return experiment
     } catch (error) {
       actionError.value = error instanceof ApiError ? error.message : '创建实验失败。'
       return null
@@ -852,6 +864,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
   ): Promise<boolean> {
     actionPending.value = action
     actionError.value = null
+    actionNotice.value = null
     try {
       const updated = await api.submitAction(experimentId, {
         action,
@@ -963,6 +976,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     connectionState,
     actionPending,
     actionError,
+    actionNotice,
     trails,
     snapshotBuffer,
     trailVersion,
@@ -1009,6 +1023,7 @@ export const useExperimentsStore = defineStore('experiments', () => {
     enterReview,
     seekCursorFromCache,
     beginReviewScrub,
+    endReviewScrub,
     settleReviewCursor,
     maybeAutoReturnToLive,
     jumpByPercent,

@@ -348,6 +348,18 @@ public class ExperimentService implements AutoCloseable {
 
     public Experiment createExperiment(String name, SimulationConfig config,
             ExperimentRetryRequest retryRequest) {
+        return createOrReuseExperiment(name, config, retryRequest).experiment();
+    }
+
+    /**
+     * 创建实验；若已存在同一份规范化配置则复用已有记录。
+     *
+     * <p>配置名称和校验阶段生成的天体 ID 不参与比较，避免同一组输入因为
+     * 展示名称或随机 ID 不同而重复计算。查重与入队在同一个 queue 临界区内
+     * 完成，因此并发请求也只会创建一条记录。</p>
+     */
+    public ExperimentCreationResult createOrReuseExperiment(String name, SimulationConfig config,
+            ExperimentRetryRequest retryRequest) {
         ValidationResult vr = ConfigValidator.validate(config);
         if (!vr.valid()) {
             throw new ConfigValidationException(vr.issues());
@@ -357,6 +369,10 @@ public class ExperimentService implements AutoCloseable {
         Experiment e;
         synchronized (queue) {
             ExperimentLineage lineage = buildLineage(retryRequest, forExperiment);
+            Experiment duplicate = findPreferredDuplicate(forExperiment);
+            if (duplicate != null) {
+                return new ExperimentCreationResult(duplicate, true);
+            }
             e = new Experiment(java.util.UUID.randomUUID().toString(),
                     forExperiment.name() != null ? forExperiment.name() : "未命名实验",
                     forExperiment, lineage);
@@ -367,7 +383,34 @@ public class ExperimentService implements AutoCloseable {
         repository.save(e);
         scheduleNext();
         broadcastStatus(e, ExperimentStatus.QUEUED, null, "实验已创建并入队。");
-        return e;
+        return new ExperimentCreationResult(e, false);
+    }
+
+    private Experiment findPreferredDuplicate(SimulationConfig targetConfig) {
+        SimulationConfigKey targetKey = SimulationConfigKey.from(targetConfig);
+        Experiment preferred = null;
+        for (Experiment candidate : experiments.values()) {
+            if (!targetKey.equals(SimulationConfigKey.from(candidate.config()))) continue;
+            if (preferred == null || preferDuplicate(candidate, preferred)) {
+                preferred = candidate;
+            }
+        }
+        return preferred;
+    }
+
+    private static boolean preferDuplicate(Experiment candidate, Experiment current) {
+        int candidatePriority = duplicatePriority(candidate.status());
+        int currentPriority = duplicatePriority(current.status());
+        if (candidatePriority != currentPriority) return candidatePriority < currentPriority;
+        return candidate.updatedAt().isAfter(current.updatedAt());
+    }
+
+    private static int duplicatePriority(ExperimentStatus status) {
+        return switch (status) {
+            case RUNNING, QUEUED, PAUSED -> 0;
+            case COMPLETED -> 1;
+            case CANCELLED, FAILED -> 2;
+        };
     }
 
     private ExperimentLineage buildLineage(ExperimentRetryRequest retryRequest,
@@ -1507,6 +1550,43 @@ public class ExperimentService implements AutoCloseable {
         if (!valid) {
             throw new IllegalStateTransitionException(current, action,
                     current + " 实验不能执行 " + action + " 动作。");
+        }
+    }
+
+    /** 创建接口的内部结果；HTTP 层据此区分 201 与复用时的 200。 */
+    public record ExperimentCreationResult(Experiment experiment, boolean reused) {}
+
+    /**
+     * 稳定配置键：保留天体顺序和全部可见/物理配置，只忽略顶层名称与自动生成的天体 ID。
+     */
+    private record SimulationConfigKey(
+            List<BodyConfigKey> bodies,
+            double timeStepSeconds,
+            double gravitationalConstant,
+            double softeningLengthMeters,
+            Long maxSteps,
+            Double targetSimulationTimeSeconds) {
+
+        private static SimulationConfigKey from(SimulationConfig config) {
+            List<BodyConfigKey> bodies = config.bodies().stream()
+                    .map(BodyConfigKey::from)
+                    .toList();
+            return new SimulationConfigKey(bodies, config.timeStepSeconds(),
+                    config.gravitationalConstant(), config.softeningLengthMeters(),
+                    config.maxSteps(), config.targetSimulationTimeSeconds());
+        }
+    }
+
+    private record BodyConfigKey(
+            String name,
+            String color,
+            double massKg,
+            Vector3 position,
+            Vector3 velocity) {
+
+        private static BodyConfigKey from(BodySpec body) {
+            return new BodyConfigKey(body.name(), body.color(), body.massKg(),
+                    body.position(), body.velocity());
         }
     }
 

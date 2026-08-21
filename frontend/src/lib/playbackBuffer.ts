@@ -299,15 +299,16 @@ export class PlaybackBuffer {
     for (const layerName of PLAYBACK_LAYER_PRIORITY) {
       const layer = this.layer(layerName)
       if (layer.count === 0) continue
-      if (!floor) {
-        const floorIndex = layer.findFloor(step)
-        if (floorIndex >= 0) floor = this.readState(layerName, floorIndex) as PlaybackState
+      const floorIndex = layer.findFloor(step)
+      if (floorIndex >= 0) {
+        const candidate = this.readState(layerName, floorIndex) as PlaybackState
+        if (!floor || candidate.step > floor.step) floor = candidate
       }
-      if (!ceil) {
-        const ceilIndex = layer.findCeil(step)
-        if (ceilIndex >= 0) ceil = this.readState(layerName, ceilIndex) as PlaybackState
+      const ceilIndex = layer.findCeil(step)
+      if (ceilIndex >= 0) {
+        const candidate = this.readState(layerName, ceilIndex) as PlaybackState
+        if (!ceil || candidate.step < ceil.step) ceil = candidate
       }
-      if (floor && ceil) break
     }
 
     if (floor && ceil && floor.step !== ceil.step) {

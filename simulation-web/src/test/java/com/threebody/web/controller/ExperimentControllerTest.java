@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.threebody.app.domain.Experiment;
@@ -29,6 +30,42 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 class ExperimentControllerTest {
+
+    @Test
+    void createReturns201ForNewExperiment() throws Exception {
+        ExperimentService service = mock(ExperimentService.class);
+        Experiment experiment = new Experiment("experiment-new", "新实验", config());
+        when(service.createOrReuseExperiment(any(), any(), any()))
+                .thenReturn(new ExperimentService.ExperimentCreationResult(experiment, false));
+        when(service.getQueuePosition("experiment-new")).thenReturn(0);
+        when(service.getStorageBytes("experiment-new")).thenReturn(0L);
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ExperimentController(service)).build();
+
+        mvc.perform(post("/api/v1/experiments")
+                        .contentType("application/json")
+                        .content(validCreateJson("新实验")))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", "/api/v1/experiments/experiment-new"))
+                .andExpect(jsonPath("$.id").value("experiment-new"));
+    }
+
+    @Test
+    void createReturns200ForReusedExperiment() throws Exception {
+        ExperimentService service = mock(ExperimentService.class);
+        Experiment experiment = new Experiment("experiment-existing", "已有实验", config());
+        when(service.createOrReuseExperiment(any(), any(), any()))
+                .thenReturn(new ExperimentService.ExperimentCreationResult(experiment, true));
+        when(service.getQueuePosition("experiment-existing")).thenReturn(-1);
+        when(service.getStorageBytes("experiment-existing")).thenReturn(123L);
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new ExperimentController(service)).build();
+
+        mvc.perform(post("/api/v1/experiments")
+                        .contentType("application/json")
+                        .content(validCreateJson("重复名称")))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Location", "/api/v1/experiments/experiment-existing"))
+                .andExpect(jsonPath("$.id").value("experiment-existing"));
+    }
 
     @Test
     void pathVariableBindsWithoutCompilerParameterMetadata() throws Exception {
@@ -195,5 +232,23 @@ class ExperimentControllerTest {
                 1.0e6,
                 10L,
                 null);
+    }
+
+    private static String validCreateJson(String name) {
+        return """
+                {
+                  "name": "%s",
+                  "config": {
+                    "bodies": [
+                      {"id":"a","name":"甲","color":"#ffd166","massKg":1e30,"position":{"x":0,"y":0,"z":0},"velocity":{"x":0,"y":0,"z":0}},
+                      {"id":"b","name":"乙","color":"#4d96ff","massKg":1e24,"position":{"x":1e11,"y":0,"z":0},"velocity":{"x":0,"y":30000,"z":0}}
+                    ],
+                    "timeStepSeconds":60,
+                    "gravitationalConstant":6.6743e-11,
+                    "softeningLengthMeters":1000000,
+                    "maxSteps":1000
+                  }
+                }
+                """.formatted(name);
     }
 }

@@ -178,6 +178,70 @@ export function createRecord(config: SimulationConfig, name?: string,
   return record
 }
 
+function canonicalConfig(config: SimulationConfig): string {
+  const normalized = normalizeConfig(config)
+  return JSON.stringify({
+    ...normalized,
+    name: undefined,
+    bodies: normalized.bodies.map((body) => ({
+      name: body.name,
+      color: body.color,
+      massKg: body.massKg,
+      position: body.position,
+      velocity: body.velocity,
+    })),
+  })
+}
+
+function duplicatePriority(status: ExperimentStatus): number {
+  if (status === 'RUNNING' || status === 'QUEUED' || status === 'PAUSED') return 0
+  if (status === 'COMPLETED') return 1
+  return 2
+}
+
+export function findEquivalentRecord(config: SimulationConfig): MockRecord | undefined {
+  const target = canonicalConfig(config)
+  return allRecords()
+    .filter((record) => canonicalConfig(record.config) === target)
+    .sort((a, b) => {
+      const priority = duplicatePriority(a.status) - duplicatePriority(b.status)
+      return priority !== 0 ? priority : Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+    })[0]
+}
+
+/** 原地重置，保持与真实后端 RESTART 的同 ID 语义一致。 */
+export function restartRecord(record: MockRecord, config: SimulationConfig): void {
+  const normalized = normalizeConfig(config)
+  const state: MockState = {
+    step: 0,
+    simulationTimeSeconds: 0,
+    bodies: toMockBodies(normalized),
+  }
+  const metrics = computeMetrics(state, normalized, null, null, null, 0)
+  record.status = 'QUEUED'
+  record.config = normalized
+  record.state = state
+  record.metrics = metrics
+  record.initialMetrics = metrics
+  record.healthReport = updateMockHealth(normalized, metrics, metrics, null, 0, 0)
+  record.initialTotalEnergy = metrics.totalEnergyJoules
+  record.allTimeMinimum = null
+  record.events = []
+  record.samples = []
+  record.sampleStride = 1
+  record.eventSequence = 0
+  record.wsSequence = 0
+  record.replayJobs.clear()
+  record.updatedAt = nowIso()
+  record.startedAt = null
+  record.completedAt = null
+  record.endReason = null
+  record.errorCode = null
+  record.errorMessage = null
+  record.wallClockSeconds = 0
+  recordSample(record)
+}
+
 function recordSample(record: MockRecord): void {
   const point: ReportSamplePoint = {
     step: record.state.step,

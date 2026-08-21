@@ -103,12 +103,40 @@ describe('experiments Replay control', () => {
     store.seekCursorFromCache(40)
     expect(create).not.toHaveBeenCalled()
 
-    store.settleReviewCursor()
+    store.endReviewScrub()
     await vi.advanceTimersByTimeAsync(EXACT_REPLAY_SETTLE_MS - 1)
     expect(create).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(1)
     expect(create).toHaveBeenCalledTimes(1)
     expect(create).toHaveBeenCalledWith('experiment-1', 40)
+  })
+
+  it('复用响应保留已有 ID 并给出未重复保存提示', async () => {
+    const existing = experiment()
+    vi.spyOn(api, 'createExperiment').mockResolvedValue({ experiment: existing, reused: true })
+    vi.spyOn(api, 'listExperiments').mockResolvedValue([])
+    const store = useExperimentsStore()
+
+    const result = await store.createExperiment(existing.config, '重复名称')
+
+    expect(result?.id).toBe(existing.id)
+    expect(store.actionNotice).toContain('未重复创建或保存')
+  })
+
+  it('同一次拖动到最右端后仍能向左拖回，松开右端时才返回实时', () => {
+    const store = prepareStore()
+
+    store.beginReviewScrub(100)
+    expect(store.playbackMode).toBe('REVIEW_PAUSED')
+    store.seekCursorFromCache(40)
+    expect(store.cursorStep).toBe(40)
+    store.endReviewScrub()
+    expect(store.playbackMode).toBe('REVIEW_PAUSED')
+
+    store.beginReviewScrub(100)
+    expect(store.playbackMode).toBe('REVIEW_PAUSED')
+    store.endReviewScrub()
+    expect(store.playbackMode).toBe('LIVE')
   })
 
   it('过期精确结果不会覆盖新的播放头', async () => {

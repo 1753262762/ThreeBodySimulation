@@ -134,6 +134,19 @@ describe('PlaybackBuffer 查找与插值', () => {
     expect(point.bodies[1]?.position.x).toBeCloseTo(6, 6)
   })
 
+  it('interpolateAt 跨层选择全局最近包围点而不是较远的高优先级点', () => {
+    const buffer = new PlaybackBuffer(BODY_IDS)
+    buffer.setExact(makeState(10, 1, [1_000, 0, 0], [5, 0, 0]))
+    buffer.replaceOverview([makeState(80, 8, [80, 0, 0], [85, 0, 0])])
+    buffer.appendLive([makeState(95, 9.5, [95, 0, 0], [100, 0, 0])])
+    buffer.replaceFocus([makeState(120, 12, [120, 0, 0], [125, 0, 0])])
+
+    const point = buffer.interpolateAt(100)
+
+    expect(point.bodies[0]?.position.x).toBeCloseTo(100, 6)
+    expect(point.simulationTimeSeconds).toBeCloseTo(10, 6)
+  })
+
   it('interpolateAt 只有单侧缓存时退化为最近值', () => {
     const buffer = new PlaybackBuffer(BODY_IDS)
     buffer.replaceOverview([makeState(10, 1, [0, 0, 0], [5, 0, 0])])

@@ -26,6 +26,7 @@ import {
   createReplayJob,
   deleteRecord,
   deleteReplayJob,
+  findEquivalentRecord,
   getHistorySlice,
   getRecord,
   getReplayJob,
@@ -34,6 +35,7 @@ import {
   pendingReplayJobCount,
   reorder,
   replayJobResponse,
+  restartRecord,
   scheduleReplayJobs,
   toExperiment,
   toSummary,
@@ -455,6 +457,13 @@ export const handlers = [
         sourceHealthStatus: source.healthStatus ?? null,
       }
     }
+    const existing = findEquivalentRecord(payload.config)
+    if (existing) {
+      return HttpResponse.json(toExperiment(existing), {
+        status: 200,
+        headers: { Location: `${BASE}/experiments/${existing.id}` },
+      })
+    }
     const record = createRecord(payload.config, payload.name, lineage)
     startMockScheduler()
     return HttpResponse.json(toExperiment(record), {
@@ -535,11 +544,9 @@ export const handlers = [
         if (!validation.valid) {
           return errorResponse(400, 'VALIDATION_FAILED', '配置未通过校验。', validation.issues)
         }
-        const replaced = createRecord(config, record.name)
-        replaced.queueOrder = record.queueOrder
-        deleteRecord(record.id)
+        restartRecord(record, config)
         startMockScheduler()
-        return HttpResponse.json(toExperiment(replaced))
+        return HttpResponse.json(toExperiment(record))
       }
     }
     record.updatedAt = new Date().toISOString()

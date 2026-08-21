@@ -1,0 +1,26 @@
+[Unit]
+Description=Three Body Lab
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=threebody
+Group=threebody
+WorkingDirectory=/opt/three-body-lab
+Environment=SERVER_ADDRESS=127.0.0.1
+Environment=SERVER_PORT=18721
+Environment="JAVA_TOOL_OPTIONS=-Djava.awt.headless=true -Duser.home=/var/lib/three-body-lab -Xms128m -Xmx768m"
+ExecStart=/usr/bin/java -jar /opt/three-body-lab/three-body-lab.jar
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+SuccessExitStatus=143
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/three-body-lab
+
+[Install]
+WantedBy=multi-user.target

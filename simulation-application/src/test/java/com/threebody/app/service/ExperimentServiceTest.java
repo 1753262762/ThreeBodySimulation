@@ -97,13 +97,17 @@ class ExperimentServiceTest {
 
     /** 长步数配置：用于测试 PAUSE/RESUME/CANCEL 控制动作。 */
     private SimulationConfig longConfig() {
+        return longConfig(500_000L);
+    }
+
+    private SimulationConfig longConfig(long maxSteps) {
         return new SimulationConfig(
                 "长运行配置",
                 quickConfig().bodies(),
                 600.0,
                 PhysicalConstants.GRAVITATIONAL_CONSTANT,
                 1.0e7,
-                500_000L,
+                maxSteps,
                 null);
     }
 
@@ -126,7 +130,7 @@ class ExperimentServiceTest {
     void cancelQueuedExperimentHasQueuedPreviousStatus() throws Exception {
         // 创建第一个实验作为 blocker，目标实验在其后排队
         Experiment blocker = service.createExperiment("先入队", longConfig());
-        Experiment e = service.createExperiment("取消-排队", longConfig());
+        Experiment e = service.createExperiment("取消-排队", longConfig(500_001L));
         // 等第 blocker 进入 RUNNING，目标保持 QUEUED
         assertTrue(waitUntil("blocker 进入 RUNNING", 5000,
                 () -> service.getExperiment(blocker.id()).status() == ExperimentStatus.RUNNING));
@@ -165,7 +169,7 @@ class ExperimentServiceTest {
     void cancelPausedExperimentHasPausedPreviousStatus() throws Exception {
         // blocker 先入队并进入 RUNNING，目标实验在队中等待
         Experiment blocker = service.createExperiment("先入队", longConfig());
-        Experiment e = service.createExperiment("取消-暂停", longConfig());
+        Experiment e = service.createExperiment("取消-暂停", longConfig(500_001L));
         assertTrue(waitUntil("blocker 进入 RUNNING", 5000,
                 () -> service.getExperiment(blocker.id()).status() == ExperimentStatus.RUNNING));
 
@@ -426,7 +430,7 @@ class ExperimentServiceTest {
     @DisplayName("getExperiments 返回内存中全部实验")
     void getExperimentsReturnsAll() {
         Experiment e1 = service.createExperiment("第一", longConfig());
-        Experiment e2 = service.createExperiment("第二", longConfig());
+        Experiment e2 = service.createExperiment("第二", longConfig(500_001L));
 
         List<Experiment> all = service.getExperiments();
         assertEquals(2, all.size());
@@ -438,7 +442,7 @@ class ExperimentServiceTest {
     @DisplayName("创建对照实验验证来源建议并持久化配置差异")
     void comparisonExperimentPersistsValidatedLineage() {
         service.createExperiment("阻塞运行", longConfig());
-        Experiment source = service.createExperiment("源运行", longConfig());
+        Experiment source = service.createExperiment("源运行", longConfig(500_001L));
         source.setHealthReport(new SimulationHealthReport(
                 SimulationHealthStatus.WARNING,
                 new SimulationHealthMetrics(0.002, 0.002, 2L, 1200.0,
@@ -480,8 +484,8 @@ class ExperimentServiceTest {
     @DisplayName("getQueuePosition 返回正确位置")
     void getQueuePositionCorrect() {
         service.createExperiment("A", longConfig());
-        service.createExperiment("B", longConfig());
-        Experiment e3 = service.createExperiment("C", longConfig());
+        service.createExperiment("B", longConfig(500_001L));
+        Experiment e3 = service.createExperiment("C", longConfig(500_002L));
 
         assertEquals(2, service.getQueuePosition(e3.id()));
         assertEquals(-1, service.getQueuePosition("不存在的"));
@@ -491,8 +495,8 @@ class ExperimentServiceTest {
     @DisplayName("reorderQueue 重排实验顺序")
     void reorderQueueWorks() {
         Experiment e1 = service.createExperiment("第一", longConfig());
-        Experiment e2 = service.createExperiment("第二", longConfig());
-        Experiment e3 = service.createExperiment("第三", longConfig());
+        Experiment e2 = service.createExperiment("第二", longConfig(500_001L));
+        Experiment e3 = service.createExperiment("第三", longConfig(500_002L));
 
         List<Experiment> reversed = service.reorderQueue(
                 List.of(e3.id(), e2.id(), e1.id()));
@@ -539,7 +543,7 @@ class ExperimentServiceTest {
 
         sideCapture.clear();
         service.removeEventListener(sideListener);
-        service.createExperiment("第二实验", longConfig());
+        service.createExperiment("第二实验", longConfig(500_001L));
         assertTrue(sideCapture.isEmpty(), "移除后不应再收到消息");
     }
 

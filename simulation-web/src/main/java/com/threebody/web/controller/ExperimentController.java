@@ -142,13 +142,17 @@ public class ExperimentController {
         ExperimentRetryRequest retryRequest = body.retryContext() == null ? null
                 : new ExperimentRetryRequest(body.retryContext().sourceExperimentId(),
                         body.retryContext().recommendationCode(), body.retryContext().strategy());
-        Experiment e = service.createExperiment(body.name(), vr.normalizedConfig(), retryRequest);
+        ExperimentService.ExperimentCreationResult creation = service.createOrReuseExperiment(
+                body.name(), vr.normalizedConfig(), retryRequest);
+        Experiment e = creation.experiment();
 
         Map<String, Object> dto = toExperimentDto(e, service.getQueuePosition(e.id()),
                 service.getStorageBytes(e.id()));
 
         URI location = URI.create("/api/v1/experiments/" + e.id());
-        return ResponseEntity.created(location).body(dto);
+        return ResponseEntity.status(creation.reused() ? HttpStatus.OK : HttpStatus.CREATED)
+                .location(location)
+                .body(dto);
     }
 
     @GetMapping("/experiments/{id}")

@@ -100,7 +100,8 @@ async function toApiError(response: Response): Promise<ApiError> {
   })
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit,
+  inspectResponse?: (response: Response) => void): Promise<T> {
   let response: Response
   try {
     response = await fetch(`${baseUrl()}${path}`, {
@@ -122,6 +123,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw await toApiError(response)
   }
+
+  inspectResponse?.(response)
 
   if (response.status === 204) {
     return undefined as T
@@ -155,11 +158,15 @@ export const api = {
     return request<ExperimentSummary[]>(`/experiments${query}`)
   },
 
-  createExperiment(payload: ExperimentCreateRequest): Promise<Experiment> {
-    return request<Experiment>('/experiments', {
+  async createExperiment(payload: ExperimentCreateRequest): Promise<{ experiment: Experiment; reused: boolean }> {
+    let reused = false
+    const experiment = await request<Experiment>('/experiments', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }, (response) => {
+      reused = response.status === 200
     })
+    return { experiment, reused }
   },
 
   getExperiment(id: string): Promise<Experiment> {

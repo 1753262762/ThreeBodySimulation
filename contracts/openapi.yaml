@@ -75,7 +75,7 @@ paths:
                   $ref: '#/components/schemas/ExperimentSummary'
     post:
       tags: [experiments]
-      summary: 创建实验并入队
+      summary: 创建实验并入队，或复用同配置实验
       operationId: createExperiment
       requestBody:
         required: true
@@ -84,6 +84,17 @@ paths:
             schema:
               $ref: '#/components/schemas/ExperimentCreateRequest'
       responses:
+        '200':
+          description: 已存在同配置实验，返回复用的实验记录
+          headers:
+            Location:
+              description: 复用的实验资源地址
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Experiment'
         '201':
           description: 已创建
           headers:

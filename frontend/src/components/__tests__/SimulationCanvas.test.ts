@@ -107,23 +107,25 @@ describe('SimulationCanvas', () => {
         nearestPairIds: null,
       },
     })
-    scheduledFrame?.(1000)
+    const frameBase = performance.now() + 1_000
+    scheduledFrame?.(frameBase)
 
     trail.append(3, 3, 6, 12)
     vi.mocked(context.lineTo).mockClear()
     await wrapper.setProps({ trailVersion: 2 })
-    scheduledFrame?.(2000)
-    expect(context.lineTo).toHaveBeenCalledTimes(2)
+    scheduledFrame?.(frameBase + 1_000)
+    // XY 三点共线，轨迹简化后保留首尾两个点，因此只有一段线。
+    expect(context.lineTo).toHaveBeenCalledTimes(1)
 
     vi.mocked(context.lineTo).mockClear()
     await wrapper.setProps({ trailCutoffStep: 1 })
-    scheduledFrame?.(3000)
+    scheduledFrame?.(frameBase + 2_000)
     expect(context.lineTo).not.toHaveBeenCalled()
 
     vi.mocked(context.lineTo).mockClear()
     await wrapper.setProps({ trailCutoffStep: 3, projection: 'XZ' })
-    scheduledFrame?.(4000)
-    expect(context.lineTo).toHaveBeenCalledTimes(2)
+    scheduledFrame?.(frameBase + 3_000)
+    expect(context.lineTo).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 })
